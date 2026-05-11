@@ -61,6 +61,10 @@ pub struct FilterPanelView {
     assigned_to_me: bool,
     /// Whether "Current sprint" is selected.
     current_sprint: bool,
+    /// Issue types preserved across apply cycles (no UI control yet).
+    preserved_issue_types: Vec<String>,
+    /// Issue types to exclude, preserved across apply cycles (no UI control yet).
+    preserved_issue_types_exclude: Vec<String>,
     /// The filter options available.
     options: FilterOptions,
     /// Section types in order.
@@ -81,6 +85,8 @@ impl FilterPanelView {
             epic_select: MultiSelect::new("Epic"),
             assigned_to_me: false,
             current_sprint: false,
+            preserved_issue_types: Vec::new(),
+            preserved_issue_types_exclude: Vec::new(),
             options: FilterOptions::default(),
             sections: vec![
                 FilterSectionType::Project,
@@ -160,6 +166,10 @@ impl FilterPanelView {
         // Restore epic selections
         self.epic_select
             .set_selected(state.epics.iter().cloned().collect());
+
+        // Preserve fields without UI controls so they survive an apply cycle.
+        self.preserved_issue_types = state.issue_types.clone();
+        self.preserved_issue_types_exclude = state.issue_types_exclude.clone();
     }
 
     /// Hide the filter panel.
@@ -308,6 +318,10 @@ impl FilterPanelView {
             state.epics.push(epic.clone());
         }
 
+        // Carry through fields that don't have a UI control yet
+        state.issue_types = self.preserved_issue_types.clone();
+        state.issue_types_exclude = self.preserved_issue_types_exclude.clone();
+
         state
     }
 
@@ -321,6 +335,8 @@ impl FilterPanelView {
         self.epic_select.clear_selection();
         self.assigned_to_me = false;
         self.current_sprint = false;
+        self.preserved_issue_types.clear();
+        self.preserved_issue_types_exclude.clear();
     }
 
     /// Handle keyboard input.
