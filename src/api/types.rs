@@ -1044,6 +1044,9 @@ pub struct FilterState {
     /// Filter by issue type names (multi-select). Empty = no filter.
     #[serde(default)]
     pub issue_types: Vec<String>,
+    /// Exclude these issue type names. Empty = no exclusion.
+    #[serde(default)]
+    pub issue_types_exclude: Vec<String>,
 }
 
 impl FilterState {
@@ -1134,6 +1137,16 @@ impl FilterState {
             clauses.push(format!("issuetype IN ({})", types));
         }
 
+        if !self.issue_types_exclude.is_empty() {
+            let types = self
+                .issue_types_exclude
+                .iter()
+                .map(|t| format!("\"{}\"", t))
+                .collect::<Vec<_>>()
+                .join(", ");
+            clauses.push(format!("issuetype NOT IN ({})", types));
+        }
+
         if clauses.is_empty() {
             String::new()
         } else {
@@ -1152,6 +1165,7 @@ impl FilterState {
             && self.sprint.is_none()
             && self.epics.is_empty()
             && self.issue_types.is_empty()
+            && self.issue_types_exclude.is_empty()
     }
 
     /// Clear all filters.
@@ -1201,6 +1215,10 @@ impl FilterState {
 
         if !self.issue_types.is_empty() {
             parts.push(format!("Type: {}", self.issue_types.join(", ")));
+        }
+
+        if !self.issue_types_exclude.is_empty() {
+            parts.push(format!("Type ≠: {}", self.issue_types_exclude.join(", ")));
         }
 
         parts
