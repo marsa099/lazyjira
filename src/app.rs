@@ -3660,7 +3660,7 @@ impl App {
     /// Render the application header.
     fn render_header(&self, frame: &mut Frame, area: Rect) {
         let mut lines = vec![Line::from(Span::styled(
-            "LazyJira",
+            "Jira",
             Style::default().fg(Color::Cyan),
         ))];
         if let Some(name) = &self.active_filter_name {
