@@ -1041,6 +1041,9 @@ pub struct FilterState {
     pub sprint: Option<SprintFilter>,
     /// Filter by epic keys (multi-select).
     pub epics: Vec<String>,
+    /// Filter by issue type names (multi-select). Empty = no filter.
+    #[serde(default)]
+    pub issue_types: Vec<String>,
 }
 
 impl FilterState {
@@ -1121,6 +1124,16 @@ impl FilterState {
             clauses.push(format!("parent IN ({})", epics));
         }
 
+        if !self.issue_types.is_empty() {
+            let types = self
+                .issue_types
+                .iter()
+                .map(|t| format!("\"{}\"", t))
+                .collect::<Vec<_>>()
+                .join(", ");
+            clauses.push(format!("issuetype IN ({})", types));
+        }
+
         if clauses.is_empty() {
             String::new()
         } else {
@@ -1138,6 +1151,7 @@ impl FilterState {
             && self.components.is_empty()
             && self.sprint.is_none()
             && self.epics.is_empty()
+            && self.issue_types.is_empty()
     }
 
     /// Clear all filters.
@@ -1183,6 +1197,10 @@ impl FilterState {
 
         if !self.epics.is_empty() {
             parts.push(format!("Epic: {}", self.epics.join(", ")));
+        }
+
+        if !self.issue_types.is_empty() {
+            parts.push(format!("Type: {}", self.issue_types.join(", ")));
         }
 
         parts
