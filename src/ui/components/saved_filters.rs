@@ -31,12 +31,14 @@ pub enum SavedFiltersMode {
 /// Action returned from the saved filters dialog.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SavedFiltersAction {
-    /// User selected a saved filter to apply.
-    Select(FilterState),
+    /// User selected a saved filter to apply (carries name + state).
+    Select(SavedFilter),
     /// User wants to save the current filter with a name.
     Save(String),
     /// User wants to delete a saved filter.
     Delete(String),
+    /// User wants to toggle the default flag on the named filter.
+    ToggleDefault(String),
     /// User cancelled the dialog.
     Cancel,
 }
@@ -182,7 +184,7 @@ impl SavedFiltersDialog {
             (KeyCode::Enter, KeyModifiers::NONE) => {
                 if let Some(filter) = self.filters.get(self.selected) {
                     self.visible = false;
-                    Some(SavedFiltersAction::Select(filter.filter.clone()))
+                    Some(SavedFiltersAction::Select(filter.clone()))
                 } else {
                     None
                 }
@@ -196,6 +198,25 @@ impl SavedFiltersDialog {
             (KeyCode::Char('d'), KeyModifiers::NONE) => {
                 self.start_delete();
                 None
+            }
+            // Toggle default with 'D' (capital) or '*'
+            (KeyCode::Char('D'), _) | (KeyCode::Char('*'), _) => {
+                if let Some(filter) = self.filters.get(self.selected) {
+                    let name = filter.name.clone();
+                    // Reflect locally so the indicator updates immediately
+                    let was_default = filter.is_default;
+                    for f in &mut self.filters {
+                        f.is_default = false;
+                    }
+                    if !was_default {
+                        if let Some(f) = self.filters.get_mut(self.selected) {
+                            f.is_default = true;
+                        }
+                    }
+                    Some(SavedFiltersAction::ToggleDefault(name))
+                } else {
+                    None
+                }
             }
             // Cancel with q or Esc
             (KeyCode::Esc, _) | (KeyCode::Char('q'), KeyModifiers::NONE) => {
@@ -355,11 +376,18 @@ impl SavedFiltersDialog {
                     } else {
                         summary_text
                     };
+                    let mut name_spans = vec![Span::styled(
+                        &f.name,
+                        Style::default().add_modifier(Modifier::BOLD),
+                    )];
+                    if f.is_default {
+                        name_spans.push(Span::styled(
+                            "  ★ default",
+                            Style::default().fg(Color::Yellow),
+                        ));
+                    }
                     ListItem::new(vec![
-                        Line::from(Span::styled(
-                            &f.name,
-                            Style::default().add_modifier(Modifier::BOLD),
-                        )),
+                        Line::from(name_spans),
                         Line::from(Span::styled(
                             truncated,
                             Style::default().fg(Color::DarkGray),
@@ -396,6 +424,8 @@ impl SavedFiltersDialog {
                 Span::raw(": apply  "),
                 Span::styled("n/s", Style::default().fg(Color::Cyan)),
                 Span::raw(": save  "),
+                Span::styled("D", Style::default().fg(Color::Yellow)),
+                Span::raw(": default  "),
                 Span::styled("d", Style::default().fg(Color::Red)),
                 Span::raw(": delete  "),
                 Span::styled("q/Esc", Style::default().fg(Color::Red)),
@@ -557,14 +587,36 @@ mod tests {
         let mut dialog = SavedFiltersDialog::new();
         let mut filter_state = FilterState::default();
         filter_state.statuses.push("Open".to_string());
-        let filters = vec![SavedFilter::new("My Filter", filter_state.clone())];
-        dialog.show(filters, FilterState::default());
+        let saved = SavedFilter::new("My Filter", filter_state.clone());
+        dialog.show(vec![saved.clone()], FilterState::default());
 
         let key = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
         let action = dialog.handle_input(key);
 
-        assert_eq!(action, Some(SavedFiltersAction::Select(filter_state)));
+        assert_eq!(action, Some(SavedFiltersAction::Select(saved)));
         assert!(!dialog.is_visible());
+    }
+
+    #[test]
+    fn test_toggle_default_filter() {
+        let mut dialog = SavedFiltersDialog::new();
+        let filters = vec![
+            SavedFilter::new("A", FilterState::default()),
+            SavedFilter::new("B", FilterState::default()),
+        ];
+        dialog.show(filters, FilterState::default());
+
+        // Select B then mark as default
+        dialog.handle_input(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE));
+        let action = dialog.handle_input(KeyEvent::new(KeyCode::Char('D'), KeyModifiers::SHIFT));
+        assert_eq!(action, Some(SavedFiltersAction::ToggleDefault("B".to_string())));
+        assert!(!dialog.filters[0].is_default);
+        assert!(dialog.filters[1].is_default);
+
+        // Pressing again unsets it
+        let action = dialog.handle_input(KeyEvent::new(KeyCode::Char('D'), KeyModifiers::SHIFT));
+        assert_eq!(action, Some(SavedFiltersAction::ToggleDefault("B".to_string())));
+        assert!(!dialog.filters[1].is_default);
     }
 
     #[test]

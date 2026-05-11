@@ -1253,6 +1253,11 @@ pub struct SavedFilter {
     pub name: String,
     /// The filter state to apply when this filter is selected.
     pub filter: FilterState,
+    /// Whether this filter should be applied automatically on startup.
+    ///
+    /// At most one saved filter should have this set to true at a time.
+    #[serde(default)]
+    pub is_default: bool,
 }
 
 impl SavedFilter {
@@ -1261,6 +1266,7 @@ impl SavedFilter {
         Self {
             name: name.into(),
             filter,
+            is_default: false,
         }
     }
 }

@@ -279,6 +279,9 @@ pub struct App {
     filter_options: Option<FilterOptions>,
     /// Saved filters dialog.
     saved_filters_dialog: SavedFiltersDialog,
+    /// Name of the saved filter currently applied, if any. Cleared whenever
+    /// the filter state is mutated through a non-saved-filter path.
+    active_filter_name: Option<String>,
     /// JQL query input.
     jql_input: JqlInput,
     /// Current JQL query (if using direct JQL instead of filters).
@@ -403,7 +406,7 @@ impl App {
         // Initialize JQL input with history from config
         let jql_input = JqlInput::with_history(config.jql_history().to_vec());
 
-        Self {
+        let mut app = Self {
             state: AppState::Loading,
             should_quit: false,
             list_view,
@@ -422,6 +425,7 @@ impl App {
             filter_state: FilterState::new(),
             filter_options: None,
             saved_filters_dialog: SavedFiltersDialog::new(),
+            active_filter_name: None,
             jql_input,
             current_jql: None,
             pending_issue_update: None,
@@ -469,7 +473,9 @@ impl App {
             available_issue_types: Vec::new(),
             pending_create_issue: false,
             pending_fetch_issue_types: false,
-        }
+        };
+        app.apply_default_saved_filter_at_startup();
+        app
     }
 
     /// Create a new application instance with the given configuration.
@@ -495,7 +501,7 @@ impl App {
         // Initialize JQL input with history from config
         let jql_input = JqlInput::with_history(config.jql_history().to_vec());
 
-        Self {
+        let mut app = Self {
             state: AppState::Loading,
             should_quit: false,
             list_view,
@@ -514,6 +520,7 @@ impl App {
             filter_state: FilterState::new(),
             filter_options: None,
             saved_filters_dialog: SavedFiltersDialog::new(),
+            active_filter_name: None,
             jql_input,
             current_jql: None,
             pending_issue_update: None,
@@ -561,6 +568,28 @@ impl App {
             available_issue_types: Vec::new(),
             pending_create_issue: false,
             pending_fetch_issue_types: false,
+        };
+        app.apply_default_saved_filter_at_startup();
+        app
+    }
+
+    /// If a saved filter is marked as default, apply it before the first fetch.
+    ///
+    /// Called from constructors. Does not trigger a refresh — the run loop
+    /// will fetch once the app is wired up.
+    fn apply_default_saved_filter_at_startup(&mut self) {
+        if let Some(default) = self.config.settings.default_saved_filter() {
+            let name = default.name.clone();
+            let filter = default.filter.clone();
+            debug!(name = %name, "Applying default saved filter at startup");
+            let summary = if filter.is_empty() {
+                None
+            } else {
+                Some(filter.summary().join(", "))
+            };
+            self.list_view.set_filter_summary(summary);
+            self.filter_state = filter;
+            self.active_filter_name = Some(name);
         }
     }
 
@@ -1745,6 +1774,8 @@ impl App {
         };
         self.list_view.set_filter_summary(summary);
         self.filter_state = filter;
+        // A direct apply (filter panel, etc.) means we're no longer running a saved filter
+        self.active_filter_name = None;
         // Set list to loading - the runner will trigger a refresh
         self.list_view.set_loading(true);
         self.state = AppState::IssueList;
@@ -1754,6 +1785,7 @@ impl App {
     pub fn clear_filters(&mut self) {
         debug!("Clearing all filters");
         self.filter_state.clear();
+        self.active_filter_name = None;
         self.list_view.set_filter_summary(None);
         self.list_view.set_loading(true);
     }
@@ -1787,6 +1819,30 @@ impl App {
             self.notify_error(format!("Failed to save filter: {}", e));
         } else {
             self.notify_success(format!("Saved filter: {}", name));
+        }
+    }
+
+    /// Toggle the default flag on a saved filter and persist.
+    pub fn toggle_default_saved_filter(&mut self, name: String) {
+        let changed = self.config.settings.toggle_default_filter(&name);
+        if !changed {
+            return;
+        }
+        if let Err(e) = self.config.save() {
+            warn!(error = %e, "Failed to save default filter flag");
+            self.notify_error(format!("Failed to save default flag: {}", e));
+            return;
+        }
+        let now_default = self
+            .config
+            .settings
+            .default_saved_filter()
+            .map(|f| f.name.as_str())
+            == Some(name.as_str());
+        if now_default {
+            self.notify_success(format!("Default filter: {}", name));
+        } else {
+            self.notify_success(format!("Cleared default: {}", name));
         }
     }
 
@@ -1843,6 +1899,7 @@ impl App {
         debug!(jql = %jql, "Executing JQL query");
         // Clear filter state when using direct JQL
         self.filter_state.clear();
+        self.active_filter_name = None;
         self.current_jql = Some(jql.clone());
         // Update filter summary to show JQL is active
         self.list_view
@@ -3014,9 +3071,13 @@ impl App {
         if self.saved_filters_dialog.is_visible() {
             if let Some(action) = self.saved_filters_dialog.handle_input(key_event) {
                 match action {
-                    SavedFiltersAction::Select(filter) => {
-                        debug!("Saved filter selected");
-                        self.apply_filter(filter);
+                    SavedFiltersAction::Select(saved) => {
+                        debug!(name = %saved.name, "Saved filter selected");
+                        let name = saved.name;
+                        self.apply_filter(saved.filter);
+                        // apply_filter cleared the name — restore it since this
+                        // application came from a saved filter selection.
+                        self.active_filter_name = Some(name);
                     }
                     SavedFiltersAction::Save(name) => {
                         debug!(name = %name, "Saving current filter");
@@ -3025,6 +3086,10 @@ impl App {
                     SavedFiltersAction::Delete(name) => {
                         debug!(name = %name, "Deleting saved filter");
                         self.delete_saved_filter(name);
+                    }
+                    SavedFiltersAction::ToggleDefault(name) => {
+                        debug!(name = %name, "Toggling default saved filter");
+                        self.toggle_default_saved_filter(name);
                     }
                     SavedFiltersAction::Cancel => {
                         debug!("Saved filters dialog cancelled");
@@ -3594,14 +3659,26 @@ impl App {
 
     /// Render the application header.
     fn render_header(&self, frame: &mut Frame, area: Rect) {
-        let title = Paragraph::new("LazyJira")
-            .style(Style::default().fg(Color::Cyan))
-            .alignment(Alignment::Center)
-            .block(
-                Block::default()
-                    .borders(Borders::BOTTOM)
-                    .border_style(Style::default().fg(Color::DarkGray)),
-            );
+        let mut lines = vec![Line::from(Span::styled(
+            "LazyJira",
+            Style::default().fg(Color::Cyan),
+        ))];
+        if let Some(name) = &self.active_filter_name {
+            lines.push(Line::from(vec![
+                Span::styled("Filter: ", Style::default().fg(Color::DarkGray)),
+                Span::styled(name.as_str(), Style::default().fg(Color::Yellow)),
+            ]));
+        } else if self.current_jql.is_some() {
+            lines.push(Line::from(Span::styled(
+                "Filter: (custom JQL)",
+                Style::default().fg(Color::DarkGray),
+            )));
+        }
+        let title = Paragraph::new(lines).alignment(Alignment::Center).block(
+            Block::default()
+                .borders(Borders::BOTTOM)
+                .border_style(Style::default().fg(Color::DarkGray)),
+        );
         frame.render_widget(title, area);
     }
 

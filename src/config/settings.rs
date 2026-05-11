@@ -187,6 +187,34 @@ impl Settings {
         self.saved_filters.retain(|f| f.name != name);
         self.saved_filters.len() < initial_len
     }
+
+    /// Mark a saved filter as the default (clearing the flag on all others).
+    ///
+    /// Returns true if the named filter was found and marked default. Passing a
+    /// name that matches the current default unsets the default (toggle behaviour).
+    pub fn toggle_default_filter(&mut self, name: &str) -> bool {
+        let was_default = self
+            .saved_filters
+            .iter()
+            .any(|f| f.name == name && f.is_default);
+        for f in &mut self.saved_filters {
+            f.is_default = false;
+        }
+        if was_default {
+            return true; // toggled off
+        }
+        if let Some(f) = self.saved_filters.iter_mut().find(|f| f.name == name) {
+            f.is_default = true;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Get the saved filter marked as default, if any.
+    pub fn default_saved_filter(&self) -> Option<&SavedFilter> {
+        self.saved_filters.iter().find(|f| f.is_default)
+    }
 }
 
 #[cfg(test)]
