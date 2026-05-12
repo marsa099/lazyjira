@@ -30,7 +30,24 @@ use ui::{init_theme, load_theme};
 
 /// Command-line entry point parsed by clap.
 #[derive(Parser, Debug)]
-#[command(version, about = "lazyjira - terminal Jira client")]
+#[command(
+    version,
+    about = "lazyjira - terminal Jira client",
+    long_about = "A TUI for Jira. With no subcommand, launches the interactive UI. \
+                  With a subcommand, runs in headless mode and prints JSON to stdout \
+                  (errors go to stderr).\n\n\
+                  Config:   ~/.config/lazyjira/config.toml\n\
+                  Auth:     API token stored in your OS keyring (set up via the TUI)\n\
+                  Logs:     ~/.local/share/lazyjira/logs/",
+    after_help = "EXAMPLES:\n  \
+                  lazyjira                              Launch the TUI\n  \
+                  lazyjira list                         Default saved filter as JSON\n  \
+                  lazyjira list --filter api-portalen   A named saved filter\n  \
+                  lazyjira list --limit 10              Limit results\n  \
+                  lazyjira get SU-1529                  Fetch one issue as JSON\n\n\
+                  PIPE WITH JQ:\n  \
+                  lazyjira list | jq '.[] | {key, summary: .fields.summary, status: .fields.status.name}'"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Option<Command>,
@@ -39,6 +56,12 @@ struct Cli {
 #[derive(Subcommand, Debug)]
 enum Command {
     /// Print issues from a saved filter as a JSON array on stdout.
+    #[command(
+        long_about = "Fetches issues matching a saved filter from your config.toml and \
+                      prints them as a JSON array on stdout. \
+                      Uses the filter marked `is_default = true` unless --filter is given. \
+                      Order is the same as the TUI default (key DESC)."
+    )]
     List {
         /// Saved filter name. Defaults to the filter marked default in config.
         #[arg(long)]
@@ -48,6 +71,10 @@ enum Command {
         limit: u32,
     },
     /// Print a single issue as JSON on stdout.
+    #[command(
+        long_about = "Fetches a single issue by key (e.g. SU-1234) and prints it as \
+                      JSON on stdout. Includes all fields except comments."
+    )]
     Get {
         /// Issue key (e.g. SU-1234).
         key: String,
