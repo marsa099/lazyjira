@@ -40,11 +40,13 @@ use ui::{init_theme, load_theme};
                   Auth:     API token stored in your OS keyring (set up via the TUI)\n\
                   Logs:     ~/.local/share/lazyjira/logs/",
     after_help = "EXAMPLES:\n  \
-                  lazyjira                              Launch the TUI\n  \
-                  lazyjira list                         Default saved filter as JSON\n  \
-                  lazyjira list --filter api-portalen   A named saved filter\n  \
-                  lazyjira list --limit 10              Limit results\n  \
-                  lazyjira get SU-1529                  Fetch one issue as JSON\n\n\
+                  lazyjira                                 Launch the TUI\n  \
+                  lazyjira list                            Default saved filter as JSON\n  \
+                  lazyjira list --filter api-portalen      A named saved filter\n  \
+                  lazyjira list --limit 10                 Limit results\n  \
+                  lazyjira get SU-1529                     Fetch one issue as JSON\n  \
+                  lazyjira comment SU-1529 -m \"done\"       Add a comment\n  \
+                  echo 'see PR #123' | lazyjira comment SU-1529   Comment from stdin\n\n\
                   PIPE WITH JQ:\n  \
                   lazyjira list | jq '.[] | {key, summary: .fields.summary, status: .fields.status.name}'"
 )]
@@ -78,6 +80,19 @@ enum Command {
     Get {
         /// Issue key (e.g. SU-1234).
         key: String,
+    },
+    /// Add a comment to an issue. Prints the created comment as JSON on stdout.
+    #[command(
+        long_about = "Adds a comment to an issue. The comment body comes from \
+                      --message <TEXT> if given, otherwise it is read from stdin. \
+                      The created comment is printed as JSON on stdout."
+    )]
+    Comment {
+        /// Issue key (e.g. SU-1234).
+        key: String,
+        /// Comment text. If omitted, read from stdin.
+        #[arg(short, long)]
+        message: Option<String>,
     },
 }
 
@@ -168,6 +183,23 @@ async fn run_cli(command: Command) -> Result<()> {
         Command::Get { key } => {
             let issue = client.get_issue(&key).await?;
             let json = serde_json::to_string_pretty(&issue)?;
+            println!("{}", json);
+        }
+        Command::Comment { key, message } => {
+            let body = match message {
+                Some(m) => m,
+                None => {
+                    let mut buf = String::new();
+                    io::Read::read_to_string(&mut io::stdin(), &mut buf)?;
+                    let trimmed = buf.trim_end_matches('\n').to_string();
+                    if trimmed.is_empty() {
+                        return Err("No comment text provided (pass --message or pipe via stdin)".into());
+                    }
+                    trimmed
+                }
+            };
+            let comment = client.add_comment(&key, &body).await?;
+            let json = serde_json::to_string_pretty(&comment)?;
             println!("{}", json);
         }
     }
