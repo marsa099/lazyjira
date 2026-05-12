@@ -16,6 +16,7 @@ mod ui;
 use std::io::{self, stdout};
 use std::panic;
 
+use clap::{Parser, Subcommand};
 use crossterm::{
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
@@ -27,15 +28,50 @@ use config::Config;
 use events::EventHandler;
 use ui::{init_theme, load_theme};
 
+/// Command-line entry point parsed by clap.
+#[derive(Parser, Debug)]
+#[command(version, about = "lazyjira - terminal Jira client")]
+struct Cli {
+    #[command(subcommand)]
+    command: Option<Command>,
+}
+
+#[derive(Subcommand, Debug)]
+enum Command {
+    /// Print issues from a saved filter as a JSON array on stdout.
+    List {
+        /// Saved filter name. Defaults to the filter marked default in config.
+        #[arg(long)]
+        filter: Option<String>,
+        /// Max issues to fetch (1-100).
+        #[arg(long, default_value_t = 100)]
+        limit: u32,
+    },
+    /// Print a single issue as JSON on stdout.
+    Get {
+        /// Issue key (e.g. SU-1234).
+        key: String,
+    },
+}
+
 /// Application result type.
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    let cli = Cli::parse();
+
     // Initialize logging first (before any other operations)
     if let Err(e) = logging::init() {
         eprintln!("Warning: Failed to initialize logging: {}", e);
         // Continue without logging rather than failing completely
+    }
+
+    // CLI mode: handle subcommand and exit before any TUI init.
+    if let Some(command) = cli.command {
+        let result = run_cli(command).await;
+        logging::shutdown();
+        return result;
     }
 
     // Load configuration and initialize theme before anything else
@@ -63,6 +99,52 @@ async fn main() -> Result<()> {
 
     // Propagate any error from the application
     result
+}
+
+/// Run a non-TUI CLI subcommand. Prints JSON to stdout, errors to stderr.
+async fn run_cli(command: Command) -> Result<()> {
+    use api::JiraClient;
+
+    let config = Config::load().unwrap_or_default();
+    let profile = config
+        .get_default_profile()
+        .ok_or("No default profile configured. Open lazyjira (TUI) and add a profile first.")?
+        .clone();
+
+    let client = JiraClient::new(&profile).await?;
+
+    match command {
+        Command::List { filter, limit } => {
+            let saved = match &filter {
+                Some(name) => config
+                    .settings
+                    .saved_filters
+                    .iter()
+                    .find(|f| f.name == *name)
+                    .ok_or_else(|| format!("No saved filter named '{}'", name))?,
+                None => config
+                    .settings
+                    .default_saved_filter()
+                    .ok_or("No default saved filter. Pass --filter NAME or mark one as default.")?,
+            };
+
+            let mut jql = saved.filter.to_jql();
+            if jql.is_empty() {
+                jql = "assignee = currentUser() OR reporter = currentUser()".to_string();
+            }
+            jql.push_str(" ORDER BY key DESC");
+
+            let result = client.search_issues(&jql, 0, limit).await?;
+            let json = serde_json::to_string_pretty(&result.issues)?;
+            println!("{}", json);
+        }
+        Command::Get { key } => {
+            let issue = client.get_issue(&key).await?;
+            let json = serde_json::to_string_pretty(&issue)?;
+            println!("{}", json);
+        }
+    }
+    Ok(())
 }
 
 /// Set up a panic hook that restores the terminal state before panicking.
