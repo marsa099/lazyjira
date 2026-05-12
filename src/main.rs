@@ -311,6 +311,9 @@ async fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Resul
                                     debug!("Failed to cache results: {}", e);
                                 }
                             }
+                            for issue in &search_result.issues {
+                                app.add_issue_type_to_filter_options(&issue.fields.issuetype.name);
+                            }
                             app.list_view_mut().set_issues(search_result.issues);
                             app.list_view_mut().set_loading(false);
                             app.list_view_mut().clear_error();
@@ -662,6 +665,9 @@ async fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Resul
                     has_more,
                     next_page_token.is_some()
                 );
+                for issue in &cached.results.issues {
+                    app.add_issue_type_to_filter_options(&issue.fields.issuetype.name);
+                }
                 app.list_view_mut().set_issues(cached.results.issues);
                 app.list_view_mut().set_loading(false);
                 app.list_view_mut().clear_error();

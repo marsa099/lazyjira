@@ -1343,6 +1343,8 @@ pub struct FilterOptions {
     pub sprints: Vec<FilterOption>,
     /// Available epics.
     pub epics: Vec<FilterOption>,
+    /// Available issue types.
+    pub issue_types: Vec<FilterOption>,
 }
 
 impl FilterOptions {
@@ -1355,6 +1357,14 @@ impl FilterOptions {
     pub fn is_loaded(&self) -> bool {
         // Consider loaded if we have at least statuses
         !self.statuses.is_empty()
+    }
+
+    /// Add an issue type if it doesn't already exist.
+    pub fn add_issue_type(&mut self, name: &str) {
+        if !self.issue_types.iter().any(|t| t.id == name) {
+            self.issue_types.push(FilterOption::new(name, name));
+            self.issue_types.sort_by(|a, b| a.label.cmp(&b.label));
+        }
     }
 
     /// Add a label if it doesn't already exist.

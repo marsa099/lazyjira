@@ -37,6 +37,7 @@ pub enum FilterSectionType {
     Labels,
     Sprint,
     Epic,
+    IssueType,
 }
 
 /// The filter panel view.
@@ -57,12 +58,12 @@ pub struct FilterPanelView {
     sprint_select: MultiSelect,
     /// Epic multi-select.
     epic_select: MultiSelect,
+    /// Issue type multi-select.
+    issue_type_select: MultiSelect,
     /// Whether "Assigned to me" is selected.
     assigned_to_me: bool,
     /// Whether "Current sprint" is selected.
     current_sprint: bool,
-    /// Issue types preserved across apply cycles (no UI control yet).
-    preserved_issue_types: Vec<String>,
     /// Issue types to exclude, preserved across apply cycles (no UI control yet).
     preserved_issue_types_exclude: Vec<String>,
     /// The filter options available.
@@ -83,14 +84,15 @@ impl FilterPanelView {
             labels_select: MultiSelect::new("Labels"),
             sprint_select: MultiSelect::new("Sprint"),
             epic_select: MultiSelect::new("Epic"),
+            issue_type_select: MultiSelect::new("Issue Type"),
             assigned_to_me: false,
             current_sprint: false,
-            preserved_issue_types: Vec::new(),
             preserved_issue_types_exclude: Vec::new(),
             options: FilterOptions::default(),
             sections: vec![
                 FilterSectionType::Project,
                 FilterSectionType::Epic,
+                FilterSectionType::IssueType,
                 FilterSectionType::Status,
                 FilterSectionType::Assignee,
                 FilterSectionType::Labels,
@@ -167,8 +169,11 @@ impl FilterPanelView {
         self.epic_select
             .set_selected(state.epics.iter().cloned().collect());
 
+        // Restore issue type selections
+        self.issue_type_select
+            .set_selected(state.issue_types.iter().cloned().collect());
+
         // Preserve fields without UI controls so they survive an apply cycle.
-        self.preserved_issue_types = state.issue_types.clone();
         self.preserved_issue_types_exclude = state.issue_types_exclude.clone();
     }
 
@@ -234,6 +239,13 @@ impl FilterPanelView {
             .collect();
         self.epic_select.set_items(epic_items);
 
+        let issue_type_items: Vec<SelectItem> = options
+            .issue_types
+            .iter()
+            .map(|o| SelectItem::new(&o.id, &o.label))
+            .collect();
+        self.issue_type_select.set_items(issue_type_items);
+
         self.options = options;
     }
 
@@ -251,6 +263,7 @@ impl FilterPanelView {
             FilterSectionType::Labels => &mut self.labels_select,
             FilterSectionType::Sprint => &mut self.sprint_select,
             FilterSectionType::Epic => &mut self.epic_select,
+            FilterSectionType::IssueType => &mut self.issue_type_select,
         }
     }
 
@@ -318,8 +331,12 @@ impl FilterPanelView {
             state.epics.push(epic.clone());
         }
 
+        // Get selected issue types
+        for t in self.issue_type_select.selected() {
+            state.issue_types.push(t.clone());
+        }
+
         // Carry through fields that don't have a UI control yet
-        state.issue_types = self.preserved_issue_types.clone();
         state.issue_types_exclude = self.preserved_issue_types_exclude.clone();
 
         state
@@ -333,9 +350,9 @@ impl FilterPanelView {
         self.labels_select.clear_selection();
         self.sprint_select.clear_selection();
         self.epic_select.clear_selection();
+        self.issue_type_select.clear_selection();
         self.assigned_to_me = false;
         self.current_sprint = false;
-        self.preserved_issue_types.clear();
         self.preserved_issue_types_exclude.clear();
     }
 
@@ -413,16 +430,17 @@ impl FilterPanelView {
             .constraints([Constraint::Min(1), Constraint::Length(2)])
             .split(inner_area);
 
-        // Split content into 6 columns for filter sections
+        // Split content into 7 columns for filter sections
         let columns = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([
-                Constraint::Ratio(1, 6), // Project
-                Constraint::Ratio(1, 6), // Epic
-                Constraint::Ratio(1, 6), // Status
-                Constraint::Ratio(1, 6), // Assignee
-                Constraint::Ratio(1, 6), // Labels
-                Constraint::Ratio(1, 6), // Sprint
+                Constraint::Ratio(1, 7), // Project
+                Constraint::Ratio(1, 7), // Epic
+                Constraint::Ratio(1, 7), // Issue Type
+                Constraint::Ratio(1, 7), // Status
+                Constraint::Ratio(1, 7), // Assignee
+                Constraint::Ratio(1, 7), // Labels
+                Constraint::Ratio(1, 7), // Sprint
             ])
             .split(content_footer[0]);
 
@@ -431,14 +449,16 @@ impl FilterPanelView {
             .render(frame, columns[0], self.focused_section == 0);
         self.epic_select
             .render(frame, columns[1], self.focused_section == 1);
-        self.status_select
+        self.issue_type_select
             .render(frame, columns[2], self.focused_section == 2);
-        self.assignee_select
+        self.status_select
             .render(frame, columns[3], self.focused_section == 3);
-        self.labels_select
+        self.assignee_select
             .render(frame, columns[4], self.focused_section == 4);
-        self.sprint_select
+        self.labels_select
             .render(frame, columns[5], self.focused_section == 5);
+        self.sprint_select
+            .render(frame, columns[6], self.focused_section == 6);
 
         // Render footer with help
         let help_text = Line::from(vec![
@@ -523,13 +543,13 @@ mod tests {
         view.prev_section();
         assert_eq!(view.focused_section, 1);
 
-        // Wrap around (now 6 sections: Project, Epic, Status, Assignee, Labels, Sprint)
-        view.focused_section = 5;
+        // Wrap around (now 7 sections: Project, Epic, IssueType, Status, Assignee, Labels, Sprint)
+        view.focused_section = 6;
         view.next_section();
         assert_eq!(view.focused_section, 0);
 
         view.prev_section();
-        assert_eq!(view.focused_section, 5);
+        assert_eq!(view.focused_section, 6);
     }
 
     #[test]

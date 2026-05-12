@@ -1756,6 +1756,17 @@ impl App {
         }
     }
 
+    /// Add an issue type to the filter options if it doesn't already exist.
+    pub fn add_issue_type_to_filter_options(&mut self, name: &str) {
+        if let Some(ref mut options) = self.filter_options {
+            let before = options.issue_types.len();
+            options.add_issue_type(name);
+            if options.issue_types.len() != before {
+                self.filter_panel.set_options(options.clone());
+            }
+        }
+    }
+
     /// Open the filter panel.
     pub fn open_filter_panel(&mut self) {
         debug!("Opening filter panel");
