@@ -45,6 +45,7 @@ use ui::{init_theme, load_theme};
                   lazyjira list --filter api-portalen      A named saved filter\n  \
                   lazyjira list --limit 10                 Limit results\n  \
                   lazyjira get SU-1529                     Fetch one issue as JSON\n  \
+                  lazyjira comments SU-1529                Fetch comments as JSON\n  \
                   lazyjira comment SU-1529 -m \"done\"       Add a comment\n  \
                   echo 'see PR #123' | lazyjira comment SU-1529   Comment from stdin\n\n\
                   PIPE WITH JQ:\n  \
@@ -93,6 +94,19 @@ enum Command {
         /// Comment text. If omitted, read from stdin.
         #[arg(short, long)]
         message: Option<String>,
+    },
+    /// Print comments on an issue as a JSON array on stdout.
+    #[command(
+        long_about = "Fetches comments for an issue (newest first) and prints them \
+                      as a JSON array on stdout. Bodies are Atlassian Document \
+                      Format (ADF); pipe through jq to extract."
+    )]
+    Comments {
+        /// Issue key (e.g. SU-1234).
+        key: String,
+        /// Max comments to fetch (1-100).
+        #[arg(long, default_value_t = 50)]
+        limit: u32,
     },
 }
 
@@ -200,6 +214,11 @@ async fn run_cli(command: Command) -> Result<()> {
             };
             let comment = client.add_comment(&key, &body).await?;
             let json = serde_json::to_string_pretty(&comment)?;
+            println!("{}", json);
+        }
+        Command::Comments { key, limit } => {
+            let response = client.get_comments(&key, 0, limit).await?;
+            let json = serde_json::to_string_pretty(&response.comments)?;
             println!("{}", json);
         }
     }
