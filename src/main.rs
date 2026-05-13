@@ -84,8 +84,13 @@ enum Command {
     },
     /// Add a comment to an issue. Prints the created comment as JSON on stdout.
     #[command(
-        long_about = "Adds a comment to an issue. The comment body comes from \
-                      --message <TEXT> if given, otherwise it is read from stdin. \
+        long_about = "Adds a comment to an issue. The body comes from --message \
+                      <TEXT> if given, otherwise it is read from stdin.\n\n\
+                      Body is parsed as Markdown by default — **bold**, *italic*, \
+                      `code`, fenced ```code blocks```, headings (# ## ###), \
+                      bullet (- item) and ordered (1. item) lists, [links](url), \
+                      and ~~strikethrough~~ all render as proper Jira formatting. \
+                      Pass --plain to send the body verbatim instead.\n\n\
                       The created comment is printed as JSON on stdout."
     )]
     Comment {
@@ -94,6 +99,9 @@ enum Command {
         /// Comment text. If omitted, read from stdin.
         #[arg(short, long)]
         message: Option<String>,
+        /// Send the body as plain text instead of parsing it as Markdown.
+        #[arg(long)]
+        plain: bool,
     },
     /// Print comments on an issue as a JSON array on stdout.
     #[command(
@@ -199,7 +207,7 @@ async fn run_cli(command: Command) -> Result<()> {
             let json = serde_json::to_string_pretty(&issue)?;
             println!("{}", json);
         }
-        Command::Comment { key, message } => {
+        Command::Comment { key, message, plain } => {
             let body = match message {
                 Some(m) => m,
                 None => {
@@ -212,7 +220,11 @@ async fn run_cli(command: Command) -> Result<()> {
                     trimmed
                 }
             };
-            let comment = client.add_comment(&key, &body).await?;
+            let comment = if plain {
+                client.add_comment(&key, &body).await?
+            } else {
+                client.add_comment_markdown(&key, &body).await?
+            };
             let json = serde_json::to_string_pretty(&comment)?;
             println!("{}", json);
         }

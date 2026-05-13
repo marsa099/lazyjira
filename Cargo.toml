@@ -32,6 +32,7 @@ base64 = "0.22"
 urlencoding = "2.1"
 walkdir = "2.5"
 open = "5.3"
+pulldown-cmark = { version = "0.12", default-features = false }
 
 [dev-dependencies]
 tokio-test = "0.4"

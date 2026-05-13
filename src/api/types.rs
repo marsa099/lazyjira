@@ -800,6 +800,16 @@ impl AddCommentRequest {
             body: AtlassianDoc::from_text(text),
         }
     }
+
+    /// Create a new comment request from Markdown.
+    ///
+    /// Converts the Markdown source into a properly-structured ADF body so
+    /// headings, bold, italic, code, lists, etc. render in Jira.
+    pub fn from_markdown(text: &str) -> Self {
+        Self {
+            body: AtlassianDoc::from_markdown(text),
+        }
+    }
 }
 
 /// Atlassian Document Format (ADF) content.
@@ -928,6 +938,225 @@ impl AtlassianDoc {
                 }
             }
             _ => {}
+        }
+    }
+
+    /// Create an ADF document from Markdown text.
+    ///
+    /// Supports headings, bold, italic, strikethrough, inline code, code blocks,
+    /// bullet/numbered lists, links, and hard rules. Unknown constructs are
+    /// preserved as plain text. Unsupported markdown (e.g. tables, images) is
+    /// rendered as best-effort text.
+    pub fn from_markdown(text: &str) -> Self {
+        use pulldown_cmark::{Event, HeadingLevel, Options, Parser, Tag, TagEnd};
+
+        let mut opts = Options::empty();
+        opts.insert(Options::ENABLE_STRIKETHROUGH);
+        let parser = Parser::new_ext(text, opts);
+
+        // Block stack: each entry is a list of block-level ADF nodes being built.
+        // The root is at index 0; lists/listItems push deeper levels.
+        let mut blocks: Vec<Vec<serde_json::Value>> = vec![Vec::new()];
+        // Inline stack: inline content of the currently-open paragraph/heading.
+        // None means no inline container is open.
+        let mut inlines: Option<Vec<serde_json::Value>> = None;
+        // Currently-active text marks (strong, em, code, strike, link).
+        let mut marks: Vec<serde_json::Value> = Vec::new();
+        // Code-block accumulator (lang, text).
+        let mut code_block: Option<(String, String)> = None;
+
+        let push_text = |inlines: &mut Option<Vec<serde_json::Value>>,
+                         marks: &Vec<serde_json::Value>,
+                         text: &str| {
+            if let Some(ref mut buf) = inlines {
+                if text.is_empty() {
+                    return;
+                }
+                let mut node = serde_json::json!({ "type": "text", "text": text });
+                if !marks.is_empty() {
+                    node["marks"] = serde_json::Value::Array(marks.clone());
+                }
+                buf.push(node);
+            }
+        };
+
+        for event in parser {
+            match event {
+                Event::Start(Tag::Paragraph) => {
+                    inlines = Some(Vec::new());
+                }
+                Event::End(TagEnd::Paragraph) => {
+                    if let Some(content) = inlines.take() {
+                        let node = serde_json::json!({
+                            "type": "paragraph",
+                            "content": content,
+                        });
+                        if let Some(top) = blocks.last_mut() {
+                            top.push(node);
+                        }
+                    }
+                }
+                Event::Start(Tag::Heading { level, .. }) => {
+                    let _ = level; // captured below
+                    inlines = Some(Vec::new());
+                }
+                Event::End(TagEnd::Heading(level)) => {
+                    let n = match level {
+                        HeadingLevel::H1 => 1,
+                        HeadingLevel::H2 => 2,
+                        HeadingLevel::H3 => 3,
+                        HeadingLevel::H4 => 4,
+                        HeadingLevel::H5 => 5,
+                        HeadingLevel::H6 => 6,
+                    };
+                    if let Some(content) = inlines.take() {
+                        let node = serde_json::json!({
+                            "type": "heading",
+                            "attrs": { "level": n },
+                            "content": content,
+                        });
+                        if let Some(top) = blocks.last_mut() {
+                            top.push(node);
+                        }
+                    }
+                }
+                Event::Start(Tag::List(start)) => {
+                    let kind = if start.is_some() {
+                        "orderedList"
+                    } else {
+                        "bulletList"
+                    };
+                    // Open a new list block; children (listItems) will be pushed into it.
+                    blocks.push(Vec::new());
+                    // Stash the kind on the stack by wrapping later when closing.
+                    // We track it by remembering position; simplest is to record on close.
+                    // To do that, we push a marker now:
+                    blocks
+                        .last_mut()
+                        .unwrap()
+                        .push(serde_json::Value::String(format!("__list:{}", kind)));
+                }
+                Event::End(TagEnd::List(_)) => {
+                    let mut items = blocks.pop().unwrap_or_default();
+                    // First element is the marker; pull it out to know list kind.
+                    let kind = match items.first() {
+                        Some(serde_json::Value::String(s)) if s.starts_with("__list:") => {
+                            let k = s.trim_start_matches("__list:").to_string();
+                            items.remove(0);
+                            k
+                        }
+                        _ => "bulletList".to_string(),
+                    };
+                    let node = serde_json::json!({
+                        "type": kind,
+                        "content": items,
+                    });
+                    if let Some(top) = blocks.last_mut() {
+                        top.push(node);
+                    }
+                }
+                Event::Start(Tag::Item) => {
+                    blocks.push(Vec::new());
+                }
+                Event::End(TagEnd::Item) => {
+                    let item_content = blocks.pop().unwrap_or_default();
+                    let node = serde_json::json!({
+                        "type": "listItem",
+                        "content": item_content,
+                    });
+                    if let Some(top) = blocks.last_mut() {
+                        top.push(node);
+                    }
+                }
+                Event::Start(Tag::Emphasis) => {
+                    marks.push(serde_json::json!({ "type": "em" }));
+                }
+                Event::End(TagEnd::Emphasis) => {
+                    marks.retain(|m| m["type"] != "em");
+                }
+                Event::Start(Tag::Strong) => {
+                    marks.push(serde_json::json!({ "type": "strong" }));
+                }
+                Event::End(TagEnd::Strong) => {
+                    marks.retain(|m| m["type"] != "strong");
+                }
+                Event::Start(Tag::Strikethrough) => {
+                    marks.push(serde_json::json!({ "type": "strike" }));
+                }
+                Event::End(TagEnd::Strikethrough) => {
+                    marks.retain(|m| m["type"] != "strike");
+                }
+                Event::Start(Tag::Link { dest_url, .. }) => {
+                    marks.push(serde_json::json!({
+                        "type": "link",
+                        "attrs": { "href": dest_url.to_string() }
+                    }));
+                }
+                Event::End(TagEnd::Link) => {
+                    marks.retain(|m| m["type"] != "link");
+                }
+                Event::Start(Tag::CodeBlock(kind)) => {
+                    let lang = match kind {
+                        pulldown_cmark::CodeBlockKind::Fenced(s) => s.to_string(),
+                        pulldown_cmark::CodeBlockKind::Indented => String::new(),
+                    };
+                    code_block = Some((lang, String::new()));
+                }
+                Event::End(TagEnd::CodeBlock) => {
+                    if let Some((lang, body)) = code_block.take() {
+                        let trimmed = body.trim_end_matches('\n').to_string();
+                        let mut node = serde_json::json!({
+                            "type": "codeBlock",
+                            "content": [{ "type": "text", "text": trimmed }],
+                        });
+                        if !lang.is_empty() {
+                            node["attrs"] = serde_json::json!({ "language": lang });
+                        }
+                        if let Some(top) = blocks.last_mut() {
+                            top.push(node);
+                        }
+                    }
+                }
+                Event::Code(text) => {
+                    let mut local_marks = marks.clone();
+                    local_marks.push(serde_json::json!({ "type": "code" }));
+                    if let Some(ref mut buf) = inlines {
+                        buf.push(serde_json::json!({
+                            "type": "text",
+                            "text": text.to_string(),
+                            "marks": local_marks,
+                        }));
+                    }
+                }
+                Event::Text(text) => {
+                    if let Some((_, body)) = code_block.as_mut() {
+                        body.push_str(&text);
+                    } else {
+                        push_text(&mut inlines, &marks, &text);
+                    }
+                }
+                Event::SoftBreak => {
+                    push_text(&mut inlines, &marks, " ");
+                }
+                Event::HardBreak => {
+                    if let Some(ref mut buf) = inlines {
+                        buf.push(serde_json::json!({ "type": "hardBreak" }));
+                    }
+                }
+                Event::Rule => {
+                    if let Some(top) = blocks.last_mut() {
+                        top.push(serde_json::json!({ "type": "rule" }));
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        let content = blocks.pop().unwrap_or_default();
+        Self {
+            doc_type: "doc".to_string(),
+            version: Some(1),
+            content,
         }
     }
 
@@ -2322,6 +2551,55 @@ mod tests {
 
         let doc: AtlassianDoc = serde_json::from_str(json).unwrap();
         assert_eq!(doc.to_plain_text(), "Title\nBody text.");
+    }
+
+    #[test]
+    fn test_from_markdown_paragraph_with_bold() {
+        let doc = AtlassianDoc::from_markdown("hello **world** here");
+        assert_eq!(doc.content.len(), 1);
+        let para = &doc.content[0];
+        assert_eq!(para["type"], "paragraph");
+        let inlines = para["content"].as_array().unwrap();
+        // "hello ", "world" (strong), " here"
+        assert_eq!(inlines.len(), 3);
+        assert_eq!(inlines[1]["text"], "world");
+        assert_eq!(inlines[1]["marks"][0]["type"], "strong");
+    }
+
+    #[test]
+    fn test_from_markdown_heading_and_bullets() {
+        let md = "# Title\n\n- one\n- two";
+        let doc = AtlassianDoc::from_markdown(md);
+        assert_eq!(doc.content.len(), 2);
+        assert_eq!(doc.content[0]["type"], "heading");
+        assert_eq!(doc.content[0]["attrs"]["level"], 1);
+        assert_eq!(doc.content[1]["type"], "bulletList");
+        let items = doc.content[1]["content"].as_array().unwrap();
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0]["type"], "listItem");
+    }
+
+    #[test]
+    fn test_from_markdown_ordered_list_and_code() {
+        let md = "1. first\n2. second\n\n```rust\nfn main(){}\n```";
+        let doc = AtlassianDoc::from_markdown(md);
+        // ordered list + code block
+        assert_eq!(doc.content[0]["type"], "orderedList");
+        assert_eq!(doc.content[1]["type"], "codeBlock");
+        assert_eq!(doc.content[1]["attrs"]["language"], "rust");
+        assert_eq!(doc.content[1]["content"][0]["text"], "fn main(){}");
+    }
+
+    #[test]
+    fn test_from_markdown_inline_code_and_link() {
+        let doc = AtlassianDoc::from_markdown("see `foo()` at [docs](https://x.y)");
+        let inlines = doc.content[0]["content"].as_array().unwrap();
+        // "see ", "foo()" (code), " at ", "docs" (link)
+        assert!(inlines.iter().any(|n| n["text"] == "foo()"
+            && n["marks"][0]["type"] == "code"));
+        assert!(inlines.iter().any(|n| n["text"] == "docs"
+            && n["marks"][0]["type"] == "link"
+            && n["marks"][0]["attrs"]["href"] == "https://x.y"));
     }
 
     #[test]

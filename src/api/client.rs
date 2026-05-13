@@ -1277,6 +1277,23 @@ impl JiraClient {
         Ok(comment)
     }
 
+    /// Add a comment whose body is Markdown.
+    ///
+    /// The Markdown is parsed into ADF so headings, bold, italic, code blocks,
+    /// lists, and links render natively in Jira.
+    #[instrument(skip(self, body), fields(issue_key = %key))]
+    pub async fn add_comment_markdown(&self, key: &str, body: &str) -> Result<Comment> {
+        info!("Adding markdown comment to issue {}", key);
+        let url = format!("{}/rest/api/3/issue/{}/comment", self.base_url, key);
+        let request = AddCommentRequest::from_markdown(body);
+        let json_value = serde_json::to_value(request).map_err(|e| {
+            ApiError::InvalidResponse(format!("Failed to serialize comment: {}", e))
+        })?;
+        let comment: Comment = self.post(&url, &json_value).await?;
+        info!("Successfully added comment {} to issue {}", comment.id, key);
+        Ok(comment)
+    }
+
     // ========================================================================
     // Changelog Operations
     // ========================================================================
