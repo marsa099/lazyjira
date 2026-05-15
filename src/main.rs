@@ -42,6 +42,7 @@ use ui::{init_theme, load_theme};
     after_help = "EXAMPLES:\n  \
                   lazyjira                                 Launch the TUI\n  \
                   lazyjira list                            Default saved filter as JSON\n  \
+                  lazyjira list --short                    Compact {key, summary, status, project} per issue\n  \
                   lazyjira list --filter api-portalen      A named saved filter\n  \
                   lazyjira list --limit 10                 Limit results\n  \
                   lazyjira get SU-1529                     Fetch one issue as JSON\n  \
@@ -63,7 +64,10 @@ enum Command {
         long_about = "Fetches issues matching a saved filter from your config.toml and \
                       prints them as a JSON array on stdout. \
                       Uses the filter marked `is_default = true` unless --filter is given. \
-                      Order is the same as the TUI default (key DESC)."
+                      Order is the same as the TUI default (key DESC).\n\n\
+                      Pass --short to project each issue down to \
+                      {key, summary, status, project} — handy for quick scans without piping \
+                      through jq."
     )]
     List {
         /// Saved filter name. Defaults to the filter marked default in config.
@@ -72,6 +76,9 @@ enum Command {
         /// Max issues to fetch (1-100).
         #[arg(long, default_value_t = 100)]
         limit: u32,
+        /// Project each issue to {key, summary, status, project}.
+        #[arg(long)]
+        short: bool,
     },
     /// Print a single issue as JSON on stdout.
     #[command(
@@ -178,7 +185,7 @@ async fn run_cli(command: Command) -> Result<()> {
     let client = JiraClient::new(&profile).await?;
 
     match command {
-        Command::List { filter, limit } => {
+        Command::List { filter, limit, short } => {
             let saved = match &filter {
                 Some(name) => config
                     .settings
@@ -199,7 +206,35 @@ async fn run_cli(command: Command) -> Result<()> {
             jql.push_str(" ORDER BY key DESC");
 
             let result = client.search_issues(&jql, 0, limit).await?;
-            let json = serde_json::to_string_pretty(&result.issues)?;
+            let json = if short {
+                let compact: Vec<serde_json::Value> = result
+                    .issues
+                    .iter()
+                    .map(|issue| {
+                        let project = issue
+                            .fields
+                            .project
+                            .as_ref()
+                            .map(|p| p.key.clone())
+                            .unwrap_or_else(|| {
+                                issue
+                                    .key
+                                    .split_once('-')
+                                    .map(|(prefix, _)| prefix.to_string())
+                                    .unwrap_or_default()
+                            });
+                        serde_json::json!({
+                            "key": issue.key,
+                            "summary": issue.fields.summary,
+                            "status": issue.fields.status.name,
+                            "project": project,
+                        })
+                    })
+                    .collect();
+                serde_json::to_string_pretty(&compact)?
+            } else {
+                serde_json::to_string_pretty(&result.issues)?
+            };
             println!("{}", json);
         }
         Command::Get { key } => {
