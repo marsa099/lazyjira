@@ -965,13 +965,44 @@ impl AtlassianDoc {
         // Code-block accumulator (lang, text).
         let mut code_block: Option<(String, String)> = None;
 
+        // Open an inline container if none is open. Used by inline events so that
+        // tight list items (which pulldown-cmark emits without a Start(Paragraph))
+        // still get a wrapping paragraph node, which ADF requires inside listItem.
+        fn open_inlines(inlines: &mut Option<Vec<serde_json::Value>>) {
+            if inlines.is_none() {
+                *inlines = Some(Vec::new());
+            }
+        }
+
+        // Flush any open inline buffer as a paragraph block onto the top block frame.
+        // Called at block-level boundaries (End(Item), End(List), Rule, etc.) so
+        // that a lazily-opened paragraph is closed before the surrounding block ends.
+        fn flush_paragraph(
+            inlines: &mut Option<Vec<serde_json::Value>>,
+            blocks: &mut Vec<Vec<serde_json::Value>>,
+        ) {
+            if let Some(content) = inlines.take() {
+                if content.is_empty() {
+                    return;
+                }
+                let node = serde_json::json!({
+                    "type": "paragraph",
+                    "content": content,
+                });
+                if let Some(top) = blocks.last_mut() {
+                    top.push(node);
+                }
+            }
+        }
+
         let push_text = |inlines: &mut Option<Vec<serde_json::Value>>,
                          marks: &Vec<serde_json::Value>,
                          text: &str| {
+            if text.is_empty() {
+                return;
+            }
+            open_inlines(inlines);
             if let Some(ref mut buf) = inlines {
-                if text.is_empty() {
-                    return;
-                }
                 let mut node = serde_json::json!({ "type": "text", "text": text });
                 if !marks.is_empty() {
                     node["marks"] = serde_json::Value::Array(marks.clone());
@@ -983,18 +1014,11 @@ impl AtlassianDoc {
         for event in parser {
             match event {
                 Event::Start(Tag::Paragraph) => {
-                    inlines = Some(Vec::new());
+                    // Idempotent: don't clobber an already-open buffer.
+                    open_inlines(&mut inlines);
                 }
                 Event::End(TagEnd::Paragraph) => {
-                    if let Some(content) = inlines.take() {
-                        let node = serde_json::json!({
-                            "type": "paragraph",
-                            "content": content,
-                        });
-                        if let Some(top) = blocks.last_mut() {
-                            top.push(node);
-                        }
-                    }
+                    flush_paragraph(&mut inlines, &mut blocks);
                 }
                 Event::Start(Tag::Heading { level, .. }) => {
                     let _ = level; // captured below
@@ -1021,6 +1045,7 @@ impl AtlassianDoc {
                     }
                 }
                 Event::Start(Tag::List(start)) => {
+                    flush_paragraph(&mut inlines, &mut blocks);
                     let kind = if start.is_some() {
                         "orderedList"
                     } else {
@@ -1029,16 +1054,14 @@ impl AtlassianDoc {
                     // Open a new list block; children (listItems) will be pushed into it.
                     blocks.push(Vec::new());
                     // Stash the kind on the stack by wrapping later when closing.
-                    // We track it by remembering position; simplest is to record on close.
-                    // To do that, we push a marker now:
                     blocks
                         .last_mut()
                         .unwrap()
                         .push(serde_json::Value::String(format!("__list:{}", kind)));
                 }
                 Event::End(TagEnd::List(_)) => {
+                    flush_paragraph(&mut inlines, &mut blocks);
                     let mut items = blocks.pop().unwrap_or_default();
-                    // First element is the marker; pull it out to know list kind.
                     let kind = match items.first() {
                         Some(serde_json::Value::String(s)) if s.starts_with("__list:") => {
                             let k = s.trim_start_matches("__list:").to_string();
@@ -1059,6 +1082,9 @@ impl AtlassianDoc {
                     blocks.push(Vec::new());
                 }
                 Event::End(TagEnd::Item) => {
+                    // Flush any lazy paragraph into the item before closing it,
+                    // so tight list items get a wrapping paragraph block.
+                    flush_paragraph(&mut inlines, &mut blocks);
                     let item_content = blocks.pop().unwrap_or_default();
                     let node = serde_json::json!({
                         "type": "listItem",
@@ -1120,6 +1146,7 @@ impl AtlassianDoc {
                 Event::Code(text) => {
                     let mut local_marks = marks.clone();
                     local_marks.push(serde_json::json!({ "type": "code" }));
+                    open_inlines(&mut inlines);
                     if let Some(ref mut buf) = inlines {
                         buf.push(serde_json::json!({
                             "type": "text",
@@ -1139,11 +1166,13 @@ impl AtlassianDoc {
                     push_text(&mut inlines, &marks, " ");
                 }
                 Event::HardBreak => {
+                    open_inlines(&mut inlines);
                     if let Some(ref mut buf) = inlines {
                         buf.push(serde_json::json!({ "type": "hardBreak" }));
                     }
                 }
                 Event::Rule => {
+                    flush_paragraph(&mut inlines, &mut blocks);
                     if let Some(top) = blocks.last_mut() {
                         top.push(serde_json::json!({ "type": "rule" }));
                     }
@@ -2564,6 +2593,40 @@ mod tests {
         assert_eq!(inlines.len(), 3);
         assert_eq!(inlines[1]["text"], "world");
         assert_eq!(inlines[1]["marks"][0]["type"], "strong");
+    }
+
+    #[test]
+    fn test_from_markdown_tight_bullet_list_items_wrap_in_paragraph() {
+        // Regression: pulldown-cmark omits Start(Paragraph) inside tight list
+        // items, which used to leave listItems with empty content (Jira API
+        // rejected those with HTTP 400 INVALID_INPUT).
+        let doc = AtlassianDoc::from_markdown("- one\n- two");
+        assert_eq!(doc.content[0]["type"], "bulletList");
+        let items = doc.content[0]["content"].as_array().unwrap();
+        assert_eq!(items.len(), 2);
+        for (i, expected) in ["one", "two"].iter().enumerate() {
+            let item = &items[i];
+            assert_eq!(item["type"], "listItem");
+            let item_content = item["content"].as_array().unwrap();
+            assert_eq!(item_content.len(), 1, "listItem must contain a block node");
+            assert_eq!(item_content[0]["type"], "paragraph");
+            assert_eq!(
+                item_content[0]["content"][0]["text"], *expected,
+                "text inside the wrapping paragraph"
+            );
+        }
+    }
+
+    #[test]
+    fn test_from_markdown_tight_ordered_list_items_wrap_in_paragraph() {
+        let doc = AtlassianDoc::from_markdown("1. first\n2. second");
+        assert_eq!(doc.content[0]["type"], "orderedList");
+        let items = doc.content[0]["content"].as_array().unwrap();
+        assert_eq!(items.len(), 2);
+        for item in items {
+            let item_content = item["content"].as_array().unwrap();
+            assert_eq!(item_content[0]["type"], "paragraph");
+        }
     }
 
     #[test]
