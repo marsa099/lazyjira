@@ -48,7 +48,10 @@ use ui::{init_theme, load_theme};
                   lazyjira get SU-1529                     Fetch one issue as JSON\n  \
                   lazyjira comments SU-1529                Fetch comments as JSON\n  \
                   lazyjira comment SU-1529 -m \"done\"       Add a comment\n  \
-                  echo 'see PR #123' | lazyjira comment SU-1529   Comment from stdin\n\n\
+                  echo 'see PR #123' | lazyjira comment SU-1529   Comment from stdin\n  \
+                  lazyjira transitions SU-1529             List available transitions\n  \
+                  lazyjira transition SU-1529 \"In Progress\"  Move issue to a new state\n  \
+                  lazyjira transition SU-1529 Done         Mark as done\n\n\
                   PIPE WITH JQ:\n  \
                   lazyjira list | jq '.[] | {key, summary: .fields.summary, status: .fields.status.name}'"
 )]
@@ -122,6 +125,37 @@ enum Command {
         /// Max comments to fetch (1-100).
         #[arg(long, default_value_t = 50)]
         limit: u32,
+    },
+    /// List the workflow transitions available on an issue (as JSON).
+    #[command(
+        long_about = "Lists the transitions currently available on the given issue \
+                      (these depend on the issue's current status and your Jira \
+                      permissions). Prints a JSON array of {id, name, to} objects, \
+                      where `name` is the transition's label (e.g. \"Start work\") \
+                      and `to` is the resulting status name (e.g. \"In Progress\"). \
+                      Use `lazyjira transition <KEY> <STATE>` to actually perform one."
+    )]
+    Transitions {
+        /// Issue key (e.g. SU-1234).
+        key: String,
+    },
+    /// Transition an issue to a new state (e.g. mark Done, In Progress, FÖR TEST).
+    #[command(
+        long_about = "Moves an issue to a new workflow state.\n\n\
+                      <STATE> is matched (case-insensitive) against both the \
+                      transition NAME (e.g. \"Start work\") and the resulting \
+                      STATUS NAME (e.g. \"In Progress\", \"Done\", \"FÖR TEST\"), \
+                      so either works. Run `lazyjira transitions <KEY>` first to \
+                      see what's available — transitions depend on the issue's \
+                      current status and your permissions.\n\n\
+                      On success, prints the resulting status as JSON. \
+                      On no match, prints the available transitions to stderr."
+    )]
+    Transition {
+        /// Issue key (e.g. SU-1234).
+        key: String,
+        /// Target state — transition name or status name, case-insensitive.
+        state: String,
     },
 }
 
@@ -267,6 +301,50 @@ async fn run_cli(command: Command) -> Result<()> {
             let response = client.get_comments(&key, 0, limit).await?;
             let json = serde_json::to_string_pretty(&response.comments)?;
             println!("{}", json);
+        }
+        Command::Transitions { key } => {
+            let transitions = client.get_transitions(&key).await?;
+            let summary: Vec<serde_json::Value> = transitions
+                .iter()
+                .map(|t| {
+                    serde_json::json!({
+                        "id": t.id,
+                        "name": t.name,
+                        "to": t.to.name,
+                    })
+                })
+                .collect();
+            println!("{}", serde_json::to_string_pretty(&summary)?);
+        }
+        Command::Transition { key, state } => {
+            let transitions = client.get_transitions(&key).await?;
+            let target = state.to_lowercase();
+            let matched = transitions.iter().find(|t| {
+                t.name.to_lowercase() == target || t.to.name.to_lowercase() == target
+            });
+            let chosen = match matched {
+                Some(t) => t,
+                None => {
+                    eprintln!(
+                        "No transition matches '{}' on {}. Available transitions:",
+                        state, key
+                    );
+                    for t in &transitions {
+                        eprintln!("  - {}  → {}", t.name, t.to.name);
+                    }
+                    return Err(format!("No matching transition for '{}'", state).into());
+                }
+            };
+            client
+                .transition_issue(&key, &chosen.id, None)
+                .await?;
+            let result = serde_json::json!({
+                "ok": true,
+                "key": key,
+                "transition": chosen.name,
+                "status": chosen.to.name,
+            });
+            println!("{}", serde_json::to_string_pretty(&result)?);
         }
     }
     Ok(())
