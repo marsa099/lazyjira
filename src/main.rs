@@ -557,6 +557,17 @@ async fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Resul
         match JiraClient::new(&profile).await {
             Ok(c) => {
                 info!("Connected to JIRA as profile: {}", profile.name);
+                // Best-effort: resolve the site URL for user-facing /browse links
+                // (the profile URL may be the OAuth gateway).
+                match c.get_site_url().await {
+                    Ok(site_url) => {
+                        info!(site_url = %site_url, "Resolved Jira site URL");
+                        app.set_site_url(Some(site_url));
+                    }
+                    Err(e) => {
+                        warn!(error = %e, "Could not resolve site URL from serverInfo");
+                    }
+                }
                 client = Some(c);
             }
             Err(e) => {
