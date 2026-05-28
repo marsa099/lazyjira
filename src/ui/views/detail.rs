@@ -37,8 +37,10 @@ pub enum DetailAction {
     OpenComments(String),
     /// Request comments from the API (issue key).
     FetchComments(String),
-    /// Submit a new comment (issue key, comment body).
-    SubmitComment(String, String),
+    /// Submit a new comment (issue key, comment body, mentions as (display_name, account_id)).
+    SubmitComment(String, String, Vec<(String, String)>),
+    /// Request users for @-mention autocomplete in the composer (issue key, project key).
+    FetchCommentMentionUsers(String, String),
     /// Save the current edit (issue key, update request).
     SaveEdit(String, IssueUpdateRequest),
     /// Show confirmation dialog before discarding changes.
@@ -533,6 +535,11 @@ impl DetailView {
     /// Set the comment submitting state.
     pub fn set_comment_submitting(&mut self, submitting: bool) {
         self.comments_panel.set_submitting(submitting);
+    }
+
+    /// Provide fetched users to the comment composer's @-mention picker.
+    pub fn set_comment_mention_users(&mut self, users: Vec<User>) {
+        self.comments_panel.set_mention_users(users);
     }
 
     /// Hide the comments panel.
@@ -1141,11 +1148,11 @@ impl DetailView {
     fn handle_comments_panel_input(&mut self, key: KeyEvent) -> Option<DetailAction> {
         if let Some(action) = self.comments_panel.handle_input(key) {
             match action {
-                CommentAction::Submit(body) => {
+                CommentAction::Submit { body, mentions } => {
                     if let Some(issue) = &self.issue {
                         let issue_key = issue.key.clone();
                         self.comments_panel.set_submitting(true);
-                        Some(DetailAction::SubmitComment(issue_key, body))
+                        Some(DetailAction::SubmitComment(issue_key, body, mentions))
                     } else {
                         None
                     }
@@ -1154,6 +1161,10 @@ impl DetailView {
                 CommentAction::LoadComments(issue_key) => {
                     Some(DetailAction::FetchComments(issue_key))
                 }
+                CommentAction::FetchMentionUsers(issue_key) => self.issue.as_ref().map(|issue| {
+                    let project_key = issue.project_key().unwrap_or("").to_string();
+                    DetailAction::FetchCommentMentionUsers(issue_key, project_key)
+                }),
             }
         } else {
             None

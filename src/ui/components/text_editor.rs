@@ -224,6 +224,16 @@ impl TextEditor {
         self.cursor_col += 1;
     }
 
+    /// Insert a string at the cursor position on the current line.
+    ///
+    /// Intended for short inline insertions (e.g. an `@mention`); newlines in `s`
+    /// are not split into separate editor lines.
+    pub fn insert_str(&mut self, s: &str) {
+        let cursor = self.cursor_col;
+        self.lines[self.cursor_line].insert_str(cursor, s);
+        self.cursor_col += s.len();
+    }
+
     /// Insert a newline at the cursor position.
     fn insert_newline(&mut self) {
         let cursor = self.cursor_col;

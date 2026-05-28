@@ -14,18 +14,24 @@ use ratatui::{
     Frame,
 };
 
-use super::TextEditor;
-use crate::api::types::Comment;
+use super::{MentionAction, MentionPicker, TextEditor};
+use crate::api::types::{Comment, User};
 
 /// Action resulting from comments panel input.
 #[derive(Debug, Clone, PartialEq)]
 pub enum CommentAction {
-    /// Submit a new comment with the given text.
-    Submit(String),
+    /// Submit a new comment. `mentions` pairs `@Display Name` tokens in `body`
+    /// with account IDs so they post as real Jira mentions.
+    Submit {
+        body: String,
+        mentions: Vec<(String, String)>,
+    },
     /// Cancel the comment input / close panel.
     Cancel,
     /// Request to load comments for an issue.
     LoadComments(String),
+    /// Request users for @-mention autocomplete (issue key).
+    FetchMentionUsers(String),
 }
 
 /// The current mode of the comments panel.
@@ -63,6 +69,10 @@ pub struct CommentsPanel {
     submitting: bool,
     /// The issue key for which comments are displayed.
     issue_key: String,
+    /// Picker for @-mentioning users while composing.
+    mention_picker: MentionPicker,
+    /// Mentions selected while composing (display_name, account_id).
+    mentions: Vec<(String, String)>,
 }
 
 impl CommentsPanel {
@@ -79,6 +89,8 @@ impl CommentsPanel {
             editor: TextEditor::empty(),
             submitting: false,
             issue_key: String::new(),
+            mention_picker: MentionPicker::new(),
+            mentions: Vec::new(),
         }
     }
 
@@ -124,6 +136,8 @@ impl CommentsPanel {
         self.loading = true;
         self.visible = true;
         self.submitting = false;
+        self.mention_picker = MentionPicker::new();
+        self.mentions.clear();
     }
 
     /// Hide the panel.
@@ -151,6 +165,8 @@ impl CommentsPanel {
         self.mode = CommentPanelMode::Viewing;
         self.editor = TextEditor::empty();
         self.scroll_offset = 0;
+        self.mention_picker.hide();
+        self.mentions.clear();
     }
 
     /// Set loading state.
@@ -167,12 +183,26 @@ impl CommentsPanel {
     pub fn start_composing(&mut self) {
         self.mode = CommentPanelMode::Composing;
         self.editor = TextEditor::empty();
+        self.mention_picker.hide();
+        self.mentions.clear();
     }
 
     /// Cancel composing and return to viewing.
     pub fn cancel_composing(&mut self) {
         self.mode = CommentPanelMode::Viewing;
         self.editor = TextEditor::empty();
+        self.mention_picker.hide();
+        self.mentions.clear();
+    }
+
+    /// Whether the @-mention picker is currently open.
+    pub fn is_mention_picker_visible(&self) -> bool {
+        self.mention_picker.is_visible()
+    }
+
+    /// Populate the @-mention picker with fetched users.
+    pub fn set_mention_users(&mut self, users: Vec<User>) {
+        self.mention_picker.set_users(users);
     }
 
     /// Get the issue key.
@@ -265,15 +295,49 @@ impl CommentsPanel {
 
     /// Handle input in composing mode.
     fn handle_composing_input(&mut self, key: KeyEvent) -> Option<CommentAction> {
+        // The mention picker, when open, captures all input.
+        if self.mention_picker.is_visible() {
+            if let Some(action) = self.mention_picker.handle_input(key) {
+                match action {
+                    MentionAction::Select(account_id, display_name) => {
+                        // The triggering '@' is already in the editor; append the
+                        // display name plus a trailing space, and record the pair.
+                        self.editor.insert_str(&format!("{} ", display_name));
+                        if !self.mentions.iter().any(|(n, _)| n == &display_name) {
+                            self.mentions.push((display_name, account_id));
+                        }
+                    }
+                    MentionAction::Cancel => {
+                        // Leave the literal '@' the user already typed in place.
+                    }
+                }
+            }
+            return None;
+        }
+
         match (key.code, key.modifiers) {
             // Submit comment with Ctrl+S (consistent with edit mode, works on macOS)
             (KeyCode::Char('s'), KeyModifiers::CONTROL) => {
                 let content = self.editor.content().trim().to_string();
                 if !content.is_empty() {
                     self.submitting = true;
-                    return Some(CommentAction::Submit(content));
+                    return Some(CommentAction::Submit {
+                        body: content,
+                        mentions: self.mentions.clone(),
+                    });
                 }
                 None
+            }
+            // '@' opens the mention picker (the '@' is still inserted as text).
+            (KeyCode::Char('@'), KeyModifiers::NONE | KeyModifiers::SHIFT) => {
+                self.editor.handle_input(key);
+                let loaded = self.mention_picker.has_users();
+                self.mention_picker.show(!loaded);
+                if loaded {
+                    None
+                } else {
+                    Some(CommentAction::FetchMentionUsers(self.issue_key.clone()))
+                }
             }
             // Cancel composing
             (KeyCode::Esc, KeyModifiers::NONE) => {
@@ -342,6 +406,9 @@ impl CommentsPanel {
                 self.render_composing_mode(frame, inner);
             }
         }
+
+        // The mention picker overlays everything when open.
+        self.mention_picker.render(frame, area);
     }
 
     /// Render viewing mode.
@@ -476,6 +543,8 @@ impl CommentsPanel {
         let help_text = Line::from(vec![
             Span::styled("Ctrl+S", Style::default().fg(Color::Green)),
             Span::raw(": submit  "),
+            Span::styled("@", Style::default().fg(Color::Cyan)),
+            Span::raw(": mention  "),
             Span::styled("Esc", Style::default().fg(Color::Red)),
             Span::raw(": cancel"),
         ]);
@@ -752,5 +821,73 @@ mod tests {
     fn test_default_impl() {
         let panel = CommentsPanel::default();
         assert!(!panel.is_visible());
+    }
+
+    fn mention_user(account_id: &str, display_name: &str) -> User {
+        User {
+            account_id: account_id.to_string(),
+            display_name: display_name.to_string(),
+            email_address: None,
+            avatar_urls: None,
+            active: true,
+        }
+    }
+
+    #[test]
+    fn test_at_opens_mention_picker_and_requests_users() {
+        let mut panel = CommentsPanel::new();
+        panel.show("TEST-1");
+        panel.set_comments(vec![], 0);
+        panel.start_composing();
+
+        let action = panel.handle_input(KeyEvent::new(KeyCode::Char('@'), KeyModifiers::NONE));
+        assert_eq!(
+            action,
+            Some(CommentAction::FetchMentionUsers("TEST-1".to_string()))
+        );
+        assert!(panel.is_mention_picker_visible());
+    }
+
+    #[test]
+    fn test_selecting_mention_inserts_token_and_records_pair() {
+        let mut panel = CommentsPanel::new();
+        panel.show("TEST-1");
+        panel.set_comments(vec![], 0);
+        panel.start_composing();
+
+        // Open picker, then users arrive.
+        panel.handle_input(KeyEvent::new(KeyCode::Char('@'), KeyModifiers::NONE));
+        panel.set_mention_users(vec![mention_user("acc1", "Alice")]);
+
+        // Enter selects the highlighted user.
+        panel.handle_input(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(!panel.is_mention_picker_visible());
+
+        // Submit and verify the body + recorded mentions.
+        let action = panel.handle_input(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL));
+        match action {
+            Some(CommentAction::Submit { body, mentions }) => {
+                assert_eq!(body, "@Alice");
+                assert_eq!(mentions, vec![("Alice".to_string(), "acc1".to_string())]);
+            }
+            other => panic!("expected Submit, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_second_at_reuses_loaded_users() {
+        let mut panel = CommentsPanel::new();
+        panel.show("TEST-1");
+        panel.set_comments(vec![], 0);
+        panel.start_composing();
+
+        panel.handle_input(KeyEvent::new(KeyCode::Char('@'), KeyModifiers::NONE));
+        panel.set_mention_users(vec![mention_user("acc1", "Alice")]);
+        panel.handle_input(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+
+        // Second '@' should not re-request users since they are cached.
+        let action = panel.handle_input(KeyEvent::new(KeyCode::Char('@'), KeyModifiers::NONE));
+        assert_eq!(action, None);
+        assert!(panel.is_mention_picker_visible());
     }
 }

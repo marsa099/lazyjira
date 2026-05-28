@@ -11,7 +11,7 @@ use tracing::{debug, error, info, instrument, warn};
 use super::auth::Auth;
 use super::error::{ApiError, Result};
 use super::types::{
-    AddCommentRequest, BoardsResponse, Changelog, Comment, CommentsResponse,
+    AddCommentRequest, AtlassianDoc, BoardsResponse, Changelog, Comment, CommentsResponse,
     CreateIssueLinkRequest, CreateIssueRequest, CreateIssueResponse, CurrentUser, FieldUpdates,
     FilterOption, FilterOptions, Issue, IssueKeyRef, IssueLinkType, IssueLinkTypeRef,
     IssueLinkTypesResponse, IssuePickerResponse, IssueSuggestion, IssueTypeMeta,
@@ -1286,6 +1286,35 @@ impl JiraClient {
         info!("Adding markdown comment to issue {}", key);
         let url = format!("{}/rest/api/3/issue/{}/comment", self.base_url, key);
         let request = AddCommentRequest::from_markdown(body);
+        let json_value = serde_json::to_value(request).map_err(|e| {
+            ApiError::InvalidResponse(format!("Failed to serialize comment: {}", e))
+        })?;
+        let comment: Comment = self.post(&url, &json_value).await?;
+        info!("Successfully added comment {} to issue {}", comment.id, key);
+        Ok(comment)
+    }
+
+    /// Add a plain-text comment, turning recorded `@Display Name` tokens into
+    /// Jira mention nodes.
+    ///
+    /// `mentions` pairs a display name with its account ID. With an empty slice
+    /// this behaves like [`Self::add_comment`].
+    #[instrument(skip(self, body, mentions), fields(issue_key = %key))]
+    pub async fn add_comment_with_mentions(
+        &self,
+        key: &str,
+        body: &str,
+        mentions: &[(String, String)],
+    ) -> Result<Comment> {
+        info!(
+            "Adding comment with {} mention(s) to issue {}",
+            mentions.len(),
+            key
+        );
+        let url = format!("{}/rest/api/3/issue/{}/comment", self.base_url, key);
+        let request = AddCommentRequest {
+            body: AtlassianDoc::from_text_with_mentions(body, mentions),
+        };
         let json_value = serde_json::to_value(request).map_err(|e| {
             ApiError::InvalidResponse(format!("Failed to serialize comment: {}", e))
         })?;

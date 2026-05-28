@@ -313,8 +313,10 @@ pub struct App {
     pending_priority_change: Option<(String, String)>,
     /// Pending fetch comments request (issue key).
     pending_fetch_comments: Option<String>,
-    /// Pending submit comment request (issue key, comment body).
-    pending_submit_comment: Option<(String, String)>,
+    /// Pending submit comment request (issue key, comment body, mentions as (display_name, account_id)).
+    pending_submit_comment: Option<(String, String, Vec<(String, String)>)>,
+    /// Pending fetch users for @-mention autocomplete (issue key, project key).
+    pending_fetch_comment_users: Option<(String, String)>,
     /// Pending fetch labels request (issue key).
     pending_fetch_labels: Option<String>,
     /// Pending add label request (issue key, label).
@@ -442,6 +444,7 @@ impl App {
             pending_priority_change: None,
             pending_fetch_comments: None,
             pending_submit_comment: None,
+            pending_fetch_comment_users: None,
             pending_fetch_labels: None,
             pending_add_label: None,
             pending_remove_label: None,
@@ -537,6 +540,7 @@ impl App {
             pending_priority_change: None,
             pending_fetch_comments: None,
             pending_submit_comment: None,
+            pending_fetch_comment_users: None,
             pending_fetch_labels: None,
             pending_add_label: None,
             pending_remove_label: None,
@@ -2415,13 +2419,25 @@ impl App {
     }
 
     /// Take the pending submit comment request.
-    pub fn take_pending_submit_comment(&mut self) -> Option<(String, String)> {
+    pub fn take_pending_submit_comment(
+        &mut self,
+    ) -> Option<(String, String, Vec<(String, String)>)> {
         self.pending_submit_comment.take()
     }
 
     /// Check if there is a pending submit comment request.
     pub fn has_pending_submit_comment(&self) -> bool {
         self.pending_submit_comment.is_some()
+    }
+
+    /// Take the pending fetch comment mention users request (issue key, project key).
+    pub fn take_pending_fetch_comment_users(&mut self) -> Option<(String, String)> {
+        self.pending_fetch_comment_users.take()
+    }
+
+    /// Provide fetched users to the comment composer's @-mention picker.
+    pub fn set_comment_mention_users(&mut self, users: Vec<User>) {
+        self.detail_view.set_comment_mention_users(users);
     }
 
     /// Handle successful comment submission.
@@ -3283,9 +3299,13 @@ impl App {
                             debug!(key = %issue_key, "Fetching comments");
                             self.pending_fetch_comments = Some(issue_key);
                         }
-                        DetailAction::SubmitComment(issue_key, body) => {
+                        DetailAction::SubmitComment(issue_key, body, mentions) => {
                             debug!(key = %issue_key, "Submitting comment");
-                            self.pending_submit_comment = Some((issue_key, body));
+                            self.pending_submit_comment = Some((issue_key, body, mentions));
+                        }
+                        DetailAction::FetchCommentMentionUsers(issue_key, project_key) => {
+                            debug!(key = %issue_key, project = %project_key, "Fetching comment mention users");
+                            self.pending_fetch_comment_users = Some((issue_key, project_key));
                         }
                         DetailAction::SaveEdit(issue_key, update_request) => {
                             debug!(key = %issue_key, "Save edit requested");

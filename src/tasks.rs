@@ -87,6 +87,9 @@ pub enum ApiMessage {
     /// Comment submitted
     CommentSubmitted { result: Result<Comment, String> },
 
+    /// Users fetched for @-mention autocomplete in the comment composer
+    CommentMentionUsersFetched { result: Result<Vec<User>, String> },
+
     /// Issue update result
     IssueUpdated { result: Result<Issue, String> },
 
@@ -350,15 +353,37 @@ impl TaskSpawner {
     }
 
     /// Spawn a task to submit a comment to an issue.
-    pub fn spawn_submit_comment(&self, client: &JiraClient, issue_key: String, body: String) {
+    ///
+    /// `mentions` pairs `@Display Name` tokens in `body` with account IDs so they
+    /// post as real Jira mentions; an empty slice posts plain text.
+    pub fn spawn_submit_comment(
+        &self,
+        client: &JiraClient,
+        issue_key: String,
+        body: String,
+        mentions: Vec<(String, String)>,
+    ) {
         let tx = self.tx.clone();
         let client = client.clone();
         tokio::spawn(async move {
             let result = client
-                .add_comment(&issue_key, &body)
+                .add_comment_with_mentions(&issue_key, &body, &mentions)
                 .await
                 .map_err(|e| e.to_string());
             let _ = tx.send(ApiMessage::CommentSubmitted { result });
+        });
+    }
+
+    /// Spawn a task to fetch users for @-mention autocomplete in the composer.
+    pub fn spawn_fetch_comment_users(&self, client: &JiraClient, project_key: String) {
+        let tx = self.tx.clone();
+        let client = client.clone();
+        tokio::spawn(async move {
+            let result = client
+                .get_assignable_users(&project_key)
+                .await
+                .map_err(|e| e.to_string());
+            let _ = tx.send(ApiMessage::CommentMentionUsersFetched { result });
         });
     }
 

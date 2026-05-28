@@ -765,6 +765,18 @@ async fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Resul
                         app.handle_submit_comment_failure(&e);
                     }
                 },
+                ApiMessage::CommentMentionUsersFetched { result } => match result {
+                    Ok(users) => {
+                        debug!("Loaded {} users for @-mention", users.len());
+                        app.set_comment_mention_users(users);
+                    }
+                    Err(e) => {
+                        error!("Failed to fetch mention users: {}", e);
+                        // Clear the picker's loading state so it isn't stuck.
+                        app.set_comment_mention_users(Vec::new());
+                        app.notify_error(format!("Failed to load users for @-mention: {}", e));
+                    }
+                },
                 ApiMessage::IssueUpdated { result } => match result {
                     Ok(updated_issue) => {
                         info!("Issue {} updated successfully", updated_issue.key);
@@ -1219,12 +1231,20 @@ async fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Resul
         }
 
         // Handle submit comment request - spawn in background
-        if let Some((issue_key, body)) = app.take_pending_submit_comment() {
+        if let Some((issue_key, body, mentions)) = app.take_pending_submit_comment() {
             if let Some(ref c) = client {
                 debug!("Submitting comment to issue {}", issue_key);
-                task_spawner.spawn_submit_comment(c, issue_key, body);
+                task_spawner.spawn_submit_comment(c, issue_key, body, mentions);
             } else {
                 app.handle_submit_comment_failure("No JIRA connection");
+            }
+        }
+
+        // Handle fetch comment mention users request - spawn in background
+        if let Some((issue_key, project_key)) = app.take_pending_fetch_comment_users() {
+            if let Some(ref c) = client {
+                debug!("Fetching mention users for issue {}", issue_key);
+                task_spawner.spawn_fetch_comment_users(c, project_key);
             }
         }
 

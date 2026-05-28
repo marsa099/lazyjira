@@ -906,7 +906,11 @@ impl AtlassianDoc {
                             .and_then(|a| a.get("text"))
                             .and_then(|t| t.as_str())
                         {
-                            result.push('@');
+                            // Jira stores the leading '@' in attrs.text; only add
+                            // one if it's missing so mentions don't render as @@Name.
+                            if !text.starts_with('@') {
+                                result.push('@');
+                            }
                             result.push_str(text);
                         }
                     }
@@ -1220,6 +1224,80 @@ impl AtlassianDoc {
             version: Some(1),
             content: paragraphs,
         }
+    }
+
+    /// Create an ADF document from plain text, turning recorded `@Display Name`
+    /// tokens into Jira mention nodes.
+    ///
+    /// `mentions` pairs a display name with its account ID. Each line becomes a
+    /// paragraph; within a line, the longest matching `@Display Name` token is
+    /// replaced with a mention node and everything else stays plain text. With an
+    /// empty `mentions` slice the output is identical to [`Self::from_text`].
+    pub fn from_text_with_mentions(text: &str, mentions: &[(String, String)]) -> Self {
+        if mentions.is_empty() {
+            return Self::from_text(text);
+        }
+
+        // Longest display name first so "@John Smith" wins over "@John".
+        let mut sorted: Vec<&(String, String)> = mentions.iter().collect();
+        sorted.sort_by(|a, b| b.0.len().cmp(&a.0.len()));
+
+        let paragraphs: Vec<serde_json::Value> = text
+            .lines()
+            .map(|line| {
+                serde_json::json!({
+                    "type": "paragraph",
+                    "content": Self::inline_nodes_with_mentions(line, &sorted),
+                })
+            })
+            .collect();
+
+        Self {
+            doc_type: "doc".to_string(),
+            version: Some(1),
+            content: paragraphs,
+        }
+    }
+
+    /// Split a single line into ADF inline nodes, emitting mention nodes for any
+    /// `@Display Name` token found in `mentions` (assumed sorted longest-first).
+    fn inline_nodes_with_mentions(
+        line: &str,
+        mentions: &[&(String, String)],
+    ) -> Vec<serde_json::Value> {
+        let mut nodes: Vec<serde_json::Value> = Vec::new();
+        let mut buf = String::new();
+        let mut rest = line;
+
+        while !rest.is_empty() {
+            let matched = mentions
+                .iter()
+                .find(|(name, _)| rest.starts_with(&format!("@{}", name)));
+
+            if let Some((name, account_id)) = matched {
+                if !buf.is_empty() {
+                    nodes.push(serde_json::json!({ "type": "text", "text": buf.clone() }));
+                    buf.clear();
+                }
+                let text = format!("@{}", name);
+                let token_len = text.len();
+                nodes.push(serde_json::json!({
+                    "type": "mention",
+                    "attrs": { "id": account_id, "text": text },
+                }));
+                rest = &rest[token_len..];
+            } else {
+                let ch = rest.chars().next().unwrap();
+                buf.push(ch);
+                rest = &rest[ch.len_utf8()..];
+            }
+        }
+
+        if !buf.is_empty() {
+            nodes.push(serde_json::json!({ "type": "text", "text": buf }));
+        }
+
+        nodes
     }
 }
 
@@ -2593,6 +2671,49 @@ mod tests {
         assert_eq!(inlines.len(), 3);
         assert_eq!(inlines[1]["text"], "world");
         assert_eq!(inlines[1]["marks"][0]["type"], "strong");
+    }
+
+    #[test]
+    fn test_from_text_with_mentions_empty_matches_from_text() {
+        let text = "hello\n\nworld";
+        assert_eq!(
+            AtlassianDoc::from_text_with_mentions(text, &[]),
+            AtlassianDoc::from_text(text)
+        );
+    }
+
+    #[test]
+    fn test_from_text_with_mentions_builds_mention_node() {
+        let mentions = vec![("John Doe".to_string(), "acc-123".to_string())];
+        let doc = AtlassianDoc::from_text_with_mentions("hi @John Doe please look", &mentions);
+        let inlines = doc.content[0]["content"].as_array().unwrap();
+        // "hi ", mention, " please look"
+        assert_eq!(inlines.len(), 3);
+        assert_eq!(inlines[0]["text"], "hi ");
+        assert_eq!(inlines[1]["type"], "mention");
+        assert_eq!(inlines[1]["attrs"]["id"], "acc-123");
+        assert_eq!(inlines[1]["attrs"]["text"], "@John Doe");
+        assert_eq!(inlines[2]["text"], " please look");
+    }
+
+    #[test]
+    fn test_from_text_with_mentions_longest_match_wins() {
+        let mentions = vec![
+            ("John".to_string(), "short".to_string()),
+            ("John Doe".to_string(), "long".to_string()),
+        ];
+        let doc = AtlassianDoc::from_text_with_mentions("@John Doe", &mentions);
+        let inlines = doc.content[0]["content"].as_array().unwrap();
+        assert_eq!(inlines.len(), 1);
+        assert_eq!(inlines[0]["attrs"]["id"], "long");
+    }
+
+    #[test]
+    fn test_from_text_with_mentions_roundtrips_to_plain_text() {
+        let mentions = vec![("Åsa Ödman".to_string(), "acc-9".to_string())];
+        let doc = AtlassianDoc::from_text_with_mentions("ping @Åsa Ödman now", &mentions);
+        // The reader should render the mention once with a single leading '@'.
+        assert_eq!(doc.to_plain_text(), "ping @Åsa Ödman now");
     }
 
     #[test]
