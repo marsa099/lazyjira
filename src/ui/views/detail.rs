@@ -542,6 +542,14 @@ impl DetailView {
         self.comments_panel.set_mention_users(users);
     }
 
+    /// Whether the user is currently typing into a text field (composing a
+    /// comment or editing the issue). Used to suppress global single-key
+    /// shortcuts like `?` so those characters reach the editor.
+    pub fn is_text_editing(&self) -> bool {
+        self.comments_panel.is_composing()
+            || self.edit_state.as_ref().map(|s| s.editing).unwrap_or(false)
+    }
+
     /// Hide the comments panel.
     pub fn hide_comments_panel(&mut self) {
         self.comments_panel.hide();
@@ -1729,7 +1737,7 @@ impl DetailView {
             Span::styled(scroll_info, Style::default().fg(t.dim)),
             Span::raw(" | "),
             Span::styled(
-                "j/k:scroll  q:back  e:edit  c:comment  s:status  a:assignee  h:history  l:labels  L:link  p:priority  D:delete",
+                "j/k:scroll  q:back  e:edit  c:comment  s:status  a:assignee  h:history  l:labels  L:link  p:priority  o:open  D:delete",
                 Style::default().fg(t.dim),
             ),
         ]);

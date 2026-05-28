@@ -379,7 +379,11 @@ fn log_panic_to_file(panic_info: &panic::PanicHookInfo<'_>) {
     };
     let _ = std::fs::create_dir_all(&dir);
     let path = dir.join("panic.log");
-    let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(path) else {
+    let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    else {
         return;
     };
     let secs = std::time::SystemTime::now()
@@ -582,8 +586,9 @@ async fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Resul
         while let Ok(msg) = task_rx.try_recv() {
             match msg {
                 ApiMessage::ClientConnected(result) => match result {
-                    Ok(c) => {
+                    Ok((c, site_url)) => {
                         info!("Connected to JIRA");
+                        app.set_site_url(site_url);
                         client = Some(c);
                         needs_fetch = true;
                         needs_filter_options = true;

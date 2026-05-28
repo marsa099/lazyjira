@@ -263,6 +263,9 @@ pub struct App {
     config: Config,
     /// The current active profile.
     current_profile: Option<Profile>,
+    /// The site's user-facing base URL (from serverInfo), used for `/browse/`
+    /// links since the profile URL may be the OAuth gateway. Set on connect.
+    site_url: Option<String>,
     /// Profile picker popup (quick switch).
     profile_picker: ProfilePicker,
     /// Profile list view (full management).
@@ -419,6 +422,7 @@ impl App {
             loading,
             config,
             current_profile,
+            site_url: None,
             profile_picker: ProfilePicker::new(),
             profile_list_view: ProfileListView::new(),
             profile_form_view: ProfileFormView::new_add(),
@@ -515,6 +519,7 @@ impl App {
             loading,
             config,
             current_profile,
+            site_url: None,
             profile_picker: ProfilePicker::new(),
             profile_list_view: ProfileListView::new(),
             profile_form_view: ProfileFormView::new_add(),
@@ -813,25 +818,46 @@ impl App {
         Ok(())
     }
 
+    /// Set the site's user-facing base URL (from serverInfo), used for browser links.
+    pub fn set_site_url(&mut self, site_url: Option<String>) {
+        self.site_url = site_url;
+    }
+
+    /// Resolve the user-facing base URL for `/browse/` links.
+    ///
+    /// Prefers the site URL reported by serverInfo. Falls back to the profile URL,
+    /// but never the OAuth gateway (`api.atlassian.com/...`), which cannot serve
+    /// `/browse/` links.
+    fn browse_base_url(&self) -> Option<String> {
+        if let Some(site) = &self.site_url {
+            return Some(site.trim_end_matches('/').to_string());
+        }
+        let profile_url = self.current_profile.as_ref()?.url.trim_end_matches('/');
+        if profile_url.contains("api.atlassian.com") {
+            None
+        } else {
+            Some(profile_url.to_string())
+        }
+    }
+
     /// Open the given issue in the default web browser.
     ///
-    /// Constructs the JIRA issue URL from the current profile's base URL
-    /// and opens it using the system's default browser.
+    /// Constructs the JIRA issue URL from the site base URL and opens it using
+    /// the system's default browser.
     pub fn open_issue_in_browser(&mut self, issue_key: &str) {
-        if let Some(profile) = &self.current_profile {
-            let base_url = profile.url.trim_end_matches('/');
-            let url = format!("{}/browse/{}", base_url, issue_key);
-            info!(issue_key = %issue_key, url = %url, "Opening issue in browser");
+        let Some(base_url) = self.browse_base_url() else {
+            warn!("Cannot open issue in browser: no usable site URL");
+            self.notify_warning("Could not determine the Jira site URL to open the browser");
+            return;
+        };
+        let url = format!("{}/browse/{}", base_url, issue_key);
+        info!(issue_key = %issue_key, url = %url, "Opening issue in browser");
 
-            if let Err(e) = open::that(&url) {
-                warn!(error = %e, "Failed to open browser");
-                self.notify_error(format!("Failed to open browser: {}", e));
-            } else {
-                self.notify_info(format!("Opened {} in browser", issue_key));
-            }
+        if let Err(e) = open::that(&url) {
+            warn!(error = %e, "Failed to open browser");
+            self.notify_error(format!("Failed to open browser: {}", e));
         } else {
-            warn!("Cannot open issue in browser: no profile configured");
-            self.notify_warning("No profile configured");
+            self.notify_info(format!("Opened {} in browser", issue_key));
         }
     }
 
@@ -3169,14 +3195,21 @@ impl App {
             }
             // Help on '?' - available in all views except text editing modes
             (KeyCode::Char('?'), KeyModifiers::NONE) => {
-                // Don't open help when in text editing mode or already in help
-                if self.state != AppState::Help && self.state != AppState::CreateIssue {
-                    self.previous_state = Some(self.state);
-                    let current_context = KeyContext::from_app_state(&self.state);
-                    self.help_view = HelpView::new(current_context);
-                    self.state = AppState::Help;
+                // When composing a comment or editing the issue, let '?' fall
+                // through to the editor so it can be typed as a literal character.
+                let in_detail_text_edit =
+                    self.state == AppState::IssueDetail && self.detail_view.is_text_editing();
+                if !in_detail_text_edit {
+                    // Don't open help when already in help or in the create-issue form.
+                    if self.state != AppState::Help && self.state != AppState::CreateIssue {
+                        self.previous_state = Some(self.state);
+                        let current_context = KeyContext::from_app_state(&self.state);
+                        self.help_view = HelpView::new(current_context);
+                        self.state = AppState::Help;
+                    }
+                    return;
                 }
-                return;
+                // Fall through to state-specific handling (the comment editor).
             }
             // Profile switcher on 'p' (quick switch, available in most views)
             (KeyCode::Char('p'), KeyModifiers::NONE)

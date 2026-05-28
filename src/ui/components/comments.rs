@@ -114,6 +114,11 @@ impl CommentsPanel {
         self.mode
     }
 
+    /// Whether the panel is open and composing a new comment (text-editing mode).
+    pub fn is_composing(&self) -> bool {
+        self.visible && self.mode == CommentPanelMode::Composing
+    }
+
     /// Get the number of loaded comments.
     pub fn comment_count(&self) -> usize {
         self.comments.len()
@@ -543,6 +548,8 @@ impl CommentsPanel {
         let help_text = Line::from(vec![
             Span::styled("Ctrl+S", Style::default().fg(Color::Green)),
             Span::raw(": submit  "),
+            Span::styled("Enter", Style::default().fg(Color::Yellow)),
+            Span::raw(": newline  "),
             Span::styled("@", Style::default().fg(Color::Cyan)),
             Span::raw(": mention  "),
             Span::styled("Esc", Style::default().fg(Color::Red)),
@@ -870,6 +877,40 @@ mod tests {
                 assert_eq!(body, "@Alice");
                 assert_eq!(mentions, vec![("Alice".to_string(), "acc1".to_string())]);
             }
+            other => panic!("expected Submit, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_compose_enter_inserts_newline() {
+        let mut panel = CommentsPanel::new();
+        panel.show("TEST-1");
+        panel.set_comments(vec![], 0);
+        panel.start_composing();
+
+        panel.handle_input(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
+        panel.handle_input(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        panel.handle_input(KeyEvent::new(KeyCode::Char('b'), KeyModifiers::NONE));
+
+        let action = panel.handle_input(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL));
+        match action {
+            Some(CommentAction::Submit { body, .. }) => assert_eq!(body, "a\nb"),
+            other => panic!("expected Submit, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_compose_question_mark_is_literal() {
+        let mut panel = CommentsPanel::new();
+        panel.show("TEST-1");
+        panel.set_comments(vec![], 0);
+        panel.start_composing();
+
+        panel.handle_input(KeyEvent::new(KeyCode::Char('?'), KeyModifiers::NONE));
+
+        let action = panel.handle_input(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL));
+        match action {
+            Some(CommentAction::Submit { body, .. }) => assert_eq!(body, "?"),
             other => panic!("expected Submit, got {:?}", other),
         }
     }

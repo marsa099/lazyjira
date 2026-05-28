@@ -36,8 +36,8 @@ use crate::config::Profile;
 /// matches on these to update application state appropriately.
 #[derive(Debug)]
 pub enum ApiMessage {
-    /// Initial client connection result
-    ClientConnected(Result<JiraClient, String>),
+    /// Initial client connection result (client, site base URL for browser links)
+    ClientConnected(Result<(JiraClient, Option<String>), String>),
 
     /// Issue search results (initial fetch or refresh)
     IssuesFetched {
@@ -167,7 +167,15 @@ impl TaskSpawner {
     pub fn spawn_connect(&self, profile: Profile) {
         let tx = self.tx.clone();
         tokio::spawn(async move {
-            let result = JiraClient::new(&profile).await.map_err(|e| e.to_string());
+            let result = match JiraClient::new(&profile).await {
+                Ok(client) => {
+                    // Best-effort: the site URL is needed for user-facing /browse
+                    // links since the profile URL may be the OAuth gateway.
+                    let site_url = client.get_site_url().await.ok();
+                    Ok((client, site_url))
+                }
+                Err(e) => Err(e.to_string()),
+            };
             let _ = tx.send(ApiMessage::ClientConnected(result));
         });
     }

@@ -624,6 +624,20 @@ impl JiraClient {
         &self.base_url
     }
 
+    /// Fetch the site's user-facing base URL (e.g. `https://your.atlassian.net`).
+    ///
+    /// When connecting through the OAuth gateway (`api.atlassian.com/ex/jira/...`),
+    /// the profile URL is not suitable for user-facing `/browse/` links;
+    /// `serverInfo` reports the real site base URL.
+    pub async fn get_site_url(&self) -> Result<String> {
+        let url = format!("{}/rest/api/3/serverInfo", self.base_url);
+        let info: serde_json::Value = self.get(&url).await?;
+        info.get("baseUrl")
+            .and_then(|v| v.as_str())
+            .map(|s| s.trim_end_matches('/').to_string())
+            .ok_or_else(|| ApiError::InvalidResponse("serverInfo missing baseUrl".to_string()))
+    }
+
     // ========================================================================
     // Filter Options API Methods
     // ========================================================================
