@@ -110,7 +110,7 @@ impl TextEditor {
 
     /// Ensure the cursor column is within bounds for the current line.
     fn clamp_cursor_col(&mut self) {
-        let line_len = self.current_line().len();
+        let line_len = char_len(self.current_line());
         if self.cursor_col > line_len {
             self.cursor_col = line_len;
         }
@@ -173,7 +173,7 @@ impl TextEditor {
                 false
             }
             (KeyCode::End, _) => {
-                self.cursor_col = self.current_line().len();
+                self.cursor_col = char_len(self.current_line());
                 false
             }
             // Ctrl+A - beginning of line (emacs style)
@@ -183,13 +183,13 @@ impl TextEditor {
             }
             // Ctrl+E - end of line (emacs style)
             (KeyCode::Char('e'), KeyModifiers::CONTROL) => {
-                self.cursor_col = self.current_line().len();
+                self.cursor_col = char_len(self.current_line());
                 false
             }
             // Ctrl+U - delete line content before cursor
             (KeyCode::Char('u'), KeyModifiers::CONTROL) => {
                 if self.cursor_col > 0 {
-                    let cursor = self.cursor_col;
+                    let cursor = byte_offset(&self.lines[self.cursor_line], self.cursor_col);
                     self.lines[self.cursor_line].replace_range(..cursor, "");
                     self.cursor_col = 0;
                     true
@@ -199,9 +199,9 @@ impl TextEditor {
             }
             // Ctrl+K - delete from cursor to end of line
             (KeyCode::Char('k'), KeyModifiers::CONTROL) => {
-                let line_len = self.current_line().len();
+                let line_len = char_len(self.current_line());
                 if self.cursor_col < line_len {
-                    let cursor = self.cursor_col;
+                    let cursor = byte_offset(&self.lines[self.cursor_line], self.cursor_col);
                     self.lines[self.cursor_line].truncate(cursor);
                     true
                 } else if self.cursor_line < self.lines.len() - 1 {
@@ -219,7 +219,7 @@ impl TextEditor {
 
     /// Insert a character at the cursor position.
     fn insert_char(&mut self, c: char) {
-        let cursor = self.cursor_col;
+        let cursor = byte_offset(&self.lines[self.cursor_line], self.cursor_col);
         self.lines[self.cursor_line].insert(cursor, c);
         self.cursor_col += 1;
     }
@@ -229,15 +229,15 @@ impl TextEditor {
     /// Intended for short inline insertions (e.g. an `@mention`); newlines in `s`
     /// are not split into separate editor lines.
     pub fn insert_str(&mut self, s: &str) {
-        let cursor = self.cursor_col;
+        let cursor = byte_offset(&self.lines[self.cursor_line], self.cursor_col);
         self.lines[self.cursor_line].insert_str(cursor, s);
-        self.cursor_col += s.len();
+        self.cursor_col += char_len(s);
     }
 
     /// Insert a newline at the cursor position.
     fn insert_newline(&mut self) {
-        let cursor = self.cursor_col;
         let line_idx = self.cursor_line;
+        let cursor = byte_offset(&self.lines[line_idx], self.cursor_col);
         let new_line = self.lines[line_idx].split_off(cursor);
         self.lines.insert(line_idx + 1, new_line);
         self.cursor_line += 1;
@@ -248,14 +248,14 @@ impl TextEditor {
     fn delete_backward(&mut self) -> bool {
         if self.cursor_col > 0 {
             self.cursor_col -= 1;
-            let cursor = self.cursor_col;
+            let cursor = byte_offset(&self.lines[self.cursor_line], self.cursor_col);
             self.lines[self.cursor_line].remove(cursor);
             true
         } else if self.cursor_line > 0 {
             // Join with previous line
             let current_line = self.lines.remove(self.cursor_line);
             self.cursor_line -= 1;
-            self.cursor_col = self.lines[self.cursor_line].len();
+            self.cursor_col = char_len(&self.lines[self.cursor_line]);
             self.lines[self.cursor_line].push_str(&current_line);
             true
         } else {
@@ -265,9 +265,9 @@ impl TextEditor {
 
     /// Delete the character at the cursor.
     fn delete_forward(&mut self) -> bool {
-        let line_len = self.current_line().len();
+        let line_len = char_len(self.current_line());
         if self.cursor_col < line_len {
-            let cursor = self.cursor_col;
+            let cursor = byte_offset(&self.lines[self.cursor_line], self.cursor_col);
             self.lines[self.cursor_line].remove(cursor);
             true
         } else if self.cursor_line < self.lines.len() - 1 {
@@ -286,13 +286,13 @@ impl TextEditor {
             self.cursor_col -= 1;
         } else if self.cursor_line > 0 {
             self.cursor_line -= 1;
-            self.cursor_col = self.current_line().len();
+            self.cursor_col = char_len(self.current_line());
         }
     }
 
     /// Move cursor right.
     fn move_right(&mut self) {
-        let line_len = self.current_line().len();
+        let line_len = char_len(self.current_line());
         if self.cursor_col < line_len {
             self.cursor_col += 1;
         } else if self.cursor_line < self.lines.len() - 1 {
@@ -415,6 +415,21 @@ impl Default for TextEditor {
     fn default() -> Self {
         Self::empty()
     }
+}
+
+/// Number of characters on a line (not bytes).
+fn char_len(line: &str) -> usize {
+    line.chars().count()
+}
+
+/// Byte offset of the character at `char_col` (or the line's byte length if
+/// `char_col` is past the end). Used to bridge the character-based cursor and
+/// byte-based `String` operations so multibyte input can't land mid-character.
+fn byte_offset(line: &str, char_col: usize) -> usize {
+    line.char_indices()
+        .nth(char_col)
+        .map(|(b, _)| b)
+        .unwrap_or(line.len())
 }
 
 #[cfg(test)]
@@ -671,5 +686,47 @@ mod tests {
     fn test_scroll_info() {
         let editor = TextEditor::new("line1\nline2\nline3");
         assert_eq!(editor.scroll_info(), (1, 3)); // Line 1 of 3
+    }
+
+    #[test]
+    fn test_insert_multibyte_chars() {
+        let mut editor = TextEditor::empty();
+        for c in "aåäöb".chars() {
+            editor.handle_input(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+        }
+        assert_eq!(editor.content(), "aåäöb");
+        assert_eq!(editor.cursor_col(), 5);
+    }
+
+    #[test]
+    fn test_insert_str_then_multibyte_does_not_panic() {
+        // Regression: typing a multibyte char (e.g. "å") after an inserted
+        // mention used to panic (byte index not on a char boundary).
+        let mut editor = TextEditor::empty();
+        editor.insert_str("@Robin Eriksson ");
+        for c in "åäö".chars() {
+            editor.handle_input(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+        }
+        assert_eq!(editor.content(), "@Robin Eriksson åäö");
+        assert_eq!(editor.cursor_col(), char_len("@Robin Eriksson åäö"));
+    }
+
+    #[test]
+    fn test_insert_after_multibyte_prefix() {
+        let mut editor = TextEditor::new("åäö");
+        editor.cursor_col = 1; // between å and ä (character index)
+        editor.handle_input(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
+        assert_eq!(editor.content(), "åxäö");
+        assert_eq!(editor.cursor_col(), 2);
+    }
+
+    #[test]
+    fn test_backspace_multibyte() {
+        let mut editor = TextEditor::new("aå");
+        editor.cursor_col = 2; // after å
+        let key = KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE);
+        assert!(editor.handle_input(key));
+        assert_eq!(editor.content(), "a");
+        assert_eq!(editor.cursor_col(), 1);
     }
 }
