@@ -361,9 +361,37 @@ fn setup_panic_hook() {
         let _ = disable_raw_mode();
         let _ = execute!(stdout(), LeaveAlternateScreen);
 
+        // Persist the panic so it survives the TUI teardown (the tracing file
+        // appender buffers and may not flush on panic, so write synchronously).
+        log_panic_to_file(panic_info);
+
         // Call the original panic hook
         original_hook(panic_info);
     }));
+}
+
+/// Append a panic message and backtrace to `panic.log` in the log directory.
+fn log_panic_to_file(panic_info: &panic::PanicHookInfo<'_>) {
+    use std::io::Write;
+
+    let Some(dir) = logging::log_directory() else {
+        return;
+    };
+    let _ = std::fs::create_dir_all(&dir);
+    let path = dir.join("panic.log");
+    let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(path) else {
+        return;
+    };
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let backtrace = std::backtrace::Backtrace::force_capture();
+    let _ = writeln!(
+        file,
+        "==== panic @ epoch {} ====\n{}\nbacktrace:\n{}\n",
+        secs, panic_info, backtrace
+    );
 }
 
 /// Initialize the terminal for TUI rendering.
